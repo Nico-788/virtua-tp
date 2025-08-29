@@ -18,24 +18,55 @@ END {
         break;
     }
     sub(/ .*/, "", anteriorFecha)
-
-    print "{"
-    print "\t\""anteriorFecha"\": {"
+    
+    # Crear arrays para agrupar por fecha y determinar últimos elementos
     for (fechaTipo in tiempoRespuesta) {
-
         split(fechaTipo, partFechaTipo, " ")
-
-        if(anteriorFecha != partFechaTipo[1]) {
-            print "\t},"
-            print "\t\"" partFechaTipo[1]"\": {"
-            anteriorFecha =  partFechaTipo[1]
-        }
-
-        promedioRespuesta = tiempoRespuesta[fechaTipo] / cantidadDatosFecha[fechaTipo]
-        promedioNota = notaSatisfaccion[fechaTipo] / cantidadDatosFecha[fechaTipo]
-
-        print "\t\t\"" partFechaTipo[2]"\": {\n\t\t\t\"tiempo_respuesta_promedio\": "promedioRespuesta ",\n\t\t\t\"nota_satisfaccion_promedio\": "promedioNota "\n\t\t\t},"
+        fecha = partFechaTipo[1]
+        tipo = partFechaTipo[2]
+        fechas[fecha][tipo] = fechaTipo
     }
-    print "\t}"
+    
+    print "{"
+    
+    # Contar fechas para saber cuál es la última
+    numFechas = 0
+    for (f in fechas) numFechas++
+    
+    contadorFechas = 0
+    for (fecha in fechas) {
+        contadorFechas++
+        print "\t\"" fecha "\": {"
+        
+        # Contar tipos para esta fecha para saber cuál es el último
+        numTipos = 0
+        for (t in fechas[fecha]) numTipos++
+        
+        contadorTipos = 0
+        for (tipo in fechas[fecha]) {
+            contadorTipos++
+            fechaTipo = fechas[fecha][tipo]
+            
+            promedioRespuesta = tiempoRespuesta[fechaTipo] / cantidadDatosFecha[fechaTipo]
+            promedioNota = notaSatisfaccion[fechaTipo] / cantidadDatosFecha[fechaTipo]
+            
+            printf "\t\t\"%s\": {\n\t\t\t\"tiempo_respuesta_promedio\": %s,\n\t\t\t\"nota_satisfaccion_promedio\": %s\n\t\t\t}", tipo, promedioRespuesta, promedioNota
+            
+            # Solo agregar coma si no es el último tipo de esta fecha
+            if (contadorTipos < numTipos) {
+                print ","
+            } else {
+                print ""
+            }
+        }
+        
+        # Solo agregar coma después del cierre de fecha si no es la última fecha
+        if (contadorFechas < numFechas) {
+            print "\t},"
+        } else {
+            print "\t}"
+        }
+    }
     print "}"
+
 }
