@@ -78,7 +78,28 @@ then
     then
         if [ "$PANT" = false ]
         then
-            awk -f procesador-entrada.awk "$DIR"/*.txt > "$ARCHDEST"
+            respuesta=$(awk -f procesador_archivos.awk "$DIR"/*.txt)
+            i=0
+            indiceJson=0
+            respuestas=($respuesta)
+            declare -a jsons
+
+            while [ $i -lt ${#respuestas[@]} ]
+            do
+                if [ $(($i % 4)) -eq 3 ]
+                then
+                    fecha=${respuestas[$i - 3]}
+                    canal=${respuestas[$i - 2]}
+                    nota=${respuestas[$i - 1]}
+                    tiempoResp=${respuestas[$i]}
+
+                    jsons[$indiceJson]=$(jq -n "{\"$fecha\": {\"$canal\": {\"tiempo_respuesta_promedio\": $tiempoResp, \"nota_satisfaccion_promedio\": $nota}}}")
+                    ((indiceJson += 1))
+                fi
+                ((i += 1))
+            done
+
+            printf '%s\n' "${jsons[@]}" | jq -s 'reduce .[] as $item ({}; . * $item)' > "$ARCHDEST"
         else
             echo "Error: No es posible imprimir por pantalla y guardar en archivo al mismo tiempo"
             exit 1
@@ -93,7 +114,28 @@ if [ "$PANT" = true ]
 then
     if [ -z "$ARCHDEST" ]
     then
-        awk -f procesador-entrada.awk "$DIR"/*.txt
+        respuesta=$(awk -f procesador_archivos.awk "$DIR"/*.txt)
+            i=0
+            indiceJson=0
+            respuestas=($respuesta)
+            declare -a jsons
+
+            while [ $i -lt ${#respuestas[@]} ]
+            do
+                if [ $(($i % 4)) -eq 3 ]
+                then
+                    fecha=${respuestas[$i - 3]}
+                    canal=${respuestas[$i - 2]}
+                    tiempoResp=${respuestas[$i - 1]}
+                    nota=${respuestas[$i]}
+
+                    jsons[$indiceJson]=$(jq -n "{\"$fecha\": {\"$canal\": {\"tiempo_respuesta_promedio\": $tiempoResp, \"nota_satisfaccion_promedio\": $nota}}}")
+                    ((indiceJson += 1))
+                fi
+                ((i += 1))
+            done
+
+            echo | printf '%s\n' "${jsons[@]}" | jq -s 'reduce .[] as $item ({}; . * $item)'
     else
         echo "Error: No es posible imprimir por pantalla y guardar en archivo al mismo tiempo"
     fi
