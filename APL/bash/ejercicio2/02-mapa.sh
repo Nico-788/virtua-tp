@@ -6,59 +6,98 @@
 #separador=$4 
 #ACA BAJAMOS LA MATRIZ DEL ARCHIVO CON EL PATH $1
 
+function ayuda() {
+    echo -e "\e[1mNAME\e[0m"
+    echo -e "\t02-mapa"
+    echo -e "\n\e[1mSYNOPSIS\e[0m"
+    echo -e "\t ./02-mapa OPTION FILE OPTION"
+    echo -e "\n\e[1mDESCRIPTION\e[0m"
+    echo -e "\tProcesa los archivos .txt que almacenan encuestas el siguiente formato:"
+    echo -e "\n\e[1m\tID_ENCUESTA|FECHA|CANAL|TIEMPO_RESPUESTA|NOTA_SATISFACCION\e[0m"
+    echo -e "\n\tLos argumentos obligatorios para las opciones largas también son obligatorios para las opciones cortas."
+    echo -e "\n\t\e[1m-d, --directorio=DIRECTORY\e[0m"
+    echo -e "\t\truta del directorio con los archivos a procesar."
+    echo -e "\n\t\e[1m-a, --archivo=FILE\e[0m"
+    echo -e "\t\truta completa del archivo JSON de salida. No se puede usar con -p / --pantalla."
+    echo -e "\n\t\e[1m-p, --pantalla\e[0m"
+    echo -e "\t\tmuestra la salida por pantalla. No se puede usar con -a / --archivo."
+}
+
+options=$(getopt -o m:c:s:h --l help,matriz:,camino:,separador:,hub -- "$@" 2> /dev/null)
+if [ "$?" != "0" ]
+then
+    echo 'Opciones incorrectas.'
+    echo "Utilice --help para ayuda"
+    exit 1
+fi
+
+eval set -- "$options"
+
 archivo_matriz=""   # Archivo de matriz
-hub=""              # Estación hub (opcional)
+hub="false"              # Estación hub (opcional)
 camino=""           # Camino más corto (opcional)
 separador="|"       # Separador por defecto
+HELP="false"
 
 # -----------------------------
 # LECTURA DE PARÁMETROS
 # -----------------------------
 # Recorremos todos los parámetros pasados al script
-while [[ $# -gt 0 ]]; do
-   case "$1" in
-       -m|--matriz)
-           archivo_matriz="$2"   # Guardamos ruta del archivo de matriz
-           shift 2               # Avanzamos al siguiente parámetro
-           ;;
-       -h|--hub)
-           if [[ -n "$camino" ]]; then
-               echo "Error: -h/--hub no puede usarse con -c/--camino"
-               exit 1
-           fi
-           hub="$2"              # Guardamos la estación hub
-           shift 2
-           ;;
-       -c|--camino)
-           if [[ -n "$hub" ]]; then
-               echo "Error: -c/--camino no puede usarse con -h/--hub"
-               exit 1
-           fi
-           camino="$2"           # Guardamos el nodo de destino para camino
-           shift 2
-           ;;
-       -s|--separador)
-           separador="$2"        # Guardamos el separador personalizado
-           shift 2
-           ;;
-       *)
-           echo "Parametro desconocido: $1"
-           exit 1
-           ;;
-   esac
+while true; do
+    case "$1" in
+        -m|--matriz)
+            archivo_matriz="$2"   
+            shift 2               
+            ;;
+        -h|--hub)               
+            if [ -n "$camino" ]
+            then
+                echo "No se puede usar -h y -c a la vez"
+                echo "Utilice --help para ayuda"
+                exit 1
+            fi
+            hub="true"
+            shift 1
+            ;;
+        -c|--camino)
+            if [ "$hub" = true ]
+            then
+                echo "No se puede usar -h y -c a la vez"
+                echo "Utilice --help para ayuda"
+                exit 1
+            fi
+            camino="$2"
+            shift 2
+            ;;
+        -s|--separador)
+            separador="$2"        
+            shift 2
+            ;;
+        --help)
+            HELP="true"
+            shift 1
+            ;;
+        --)
+            break
+            ;;
+        *)
+            echo "Parametro desconocido: $1"
+            exit 1
+            ;;
+    esac
 done
 
 # -----------------------------
 # VALIDACIÓN DE ENTRADAS
 # -----------------------------
-if [[ -z "$archivo_matriz" ]]; then
-   echo "Error: Debe especificar un archivo de matriz con -m/--matriz"
-   exit 1
+if [ "$HELP" = true ]
+then
+    ayuda
+    exit 0
 fi
 
-# Validación: si no se especifica ni hub ni camino, pero la consigna pide que encuentre entre todas las estaciones
-if [[ -z "$hub" && -z "$camino" ]]; then
-   echo "Error: Debe especificar -h/--hub o -c/--camino"
+if [[ -z "$archivo_matriz" ]]; then
+   echo "Error: Debe especificar un archivo de matriz con -m/--matriz"
    exit 1
 fi
 
@@ -128,8 +167,6 @@ for ((i=0; i<cantNodos; i++)); do
    done
 done
 
-echo "Matriz validada correctamente: cuadrada, simétrica y con valores numéricos"
-
 # -----------------------------
 # CANTIDAD DE NODOS
 # -----------------------------
@@ -144,38 +181,40 @@ echo "Nodo inicial: $nodoInicial"
 # -----------------------------
 # LÓGICA PARA ENCONTRAR HUB
 # -----------------------------
-if [[ -n "$hub" ]]; then
-   echo "Buscando estación hub..."
-   
-   # Contamos las conexiones de cada estación (valores diferentes de 0)
-   declare -a conexiones_por_estacion
-   
-   for ((i=0; i<cantNodos; i++)); do
-       fila_actual=(${matriz[i]})
-       contador_conexiones=0
-       
-       for ((j=0; j<cantNodos; j++)); do
-           if [[ i -ne j && ${fila_actual[j]} -ne 0 ]]; then
-               contador_conexiones=$((contador_conexiones + 1))
-           fi
-       done
-       
-       conexiones_por_estacion[i]=$contador_conexiones
-       echo "Estación $((i+1)): $contador_conexiones conexiones"
-   done
-   
-   # Encontramos la estación con más conexiones
-   max_conexiones=0
-   estacion_hub=0
-   
-   for ((i=0; i<cantNodos; i++)); do
-       if [[ ${conexiones_por_estacion[i]} -gt $max_conexiones ]]; then
-           max_conexiones=${conexiones_por_estacion[i]}
-           estacion_hub=$i
-       fi
-   done
-   
-   echo "Hub encontrado: Estación $((estacion_hub+1)) con $max_conexiones conexiones"
+if [ "$hub" = true ]
+then
+    echo "Buscando estación hub..."
+
+    # Contamos las conexiones de cada estación (valores diferentes de 0)
+    declare -a conexiones_por_estacion
+
+    for ((i=0; i<cantNodos; i++)); do
+        fila_actual=(${matriz[i]})
+        contador_conexiones=0
+        
+        for ((j=0; j<cantNodos; j++)); do
+            if [[ i -ne j && ${fila_actual[j]} -ne 0 ]]; then
+                contador_conexiones=$((contador_conexiones + 1))
+            fi
+        done
+        
+        conexiones_por_estacion[i]=$contador_conexiones
+        echo -e "\nEstación $((i+1)): $contador_conexiones conexiones"
+    done
+
+    # Encontramos la estación con más conexiones
+    max_conexiones=0
+    estacion_hub=0
+
+    for ((i=0; i<cantNodos; i++)); do
+        if [[ ${conexiones_por_estacion[i]} -gt $max_conexiones ]]; then
+            max_conexiones=${conexiones_por_estacion[i]}
+            estacion_hub=$i
+        fi
+    done
+
+    echo "Hub encontrado: Estación $((estacion_hub+1)) con $max_conexiones conexiones"
+
 fi
 
 # -----------------------------
