@@ -20,3 +20,8 @@
 [2025-09-05 16:00:47] Alerta: palabra 'Distancia' encontrada en /home/nicolas/virtua-tp/APL/bash/ejercicio2/02-mapa.sh
 [2025-09-05 16:04:33] Alerta: palabra 'Distancia' encontrada en /home/nicolas/virtua-tp/APL/bash/ejercicio2/02-mapa.sh
 [2025-09-05 16:04:33] Alerta: palabra 'Distancia' encontrada en /home/nicolas/virtua-tp/APL/bash/ejercicio4/add.txt
+[2025-09-05 18:34:45] Alerta: patrón '.*palabra.*' encontrado en /home/nicolas/virtua-tp/APL/bash/ejercicio4/04-demon-git.sh
+[2025-09-05 18:34:45] Alerta: palabra 'password' encontrada en /home/nicolas/virtua-tp/APL/bash/ejercicio4/add.txt
+[2025-09-05 18:34:45] Alerta: palabra 'API_KEY' encontrada en /home/nicolas/virtua-tp/APL/bash/ejercicio4/add.txt
+[2025-09-05 18:34:45] Alerta: palabra 'Distancia' encontrada en /home/nicolas/virtua-tp/APL/bash/ejercicio4/add.txt
+[2025-09-05 18:34:45] Alerta: patrón '.*palabra.*' encontrado en /home/nicolas/virtua-tp/APL/bash/ejercicio4/add.txt

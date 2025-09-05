@@ -116,16 +116,16 @@ if [[ -n "$ARCH_CONFIG" && -f "$ARCH_CONFIG" ]]; then
     declare -a patronesRegex
     
     while IFS= read -r linea; do
-        if [[ "$linea" == "regex:*" ]]; then
-            patronesRegex+=("$linea")
+        if [[ "$linea" == regex:* ]]; then
+            patronesRegex+=("${linea#*regex:}")
         else
             palabrasBuscar+=("$linea")
         fi
     done < "$ARCH_CONFIG"
 
     if [ -n "$linea" ]; then
-        if [[ "$linea" == "regex:*" ]]; then
-            patronesRegex+="${linea#*regex:}"
+        if [[ "$linea" == regex:* ]]; then
+            patronesRegex+=("${linea#*regex:}")
         else
             palabrasBuscar+=("$linea")
         fi
