@@ -179,6 +179,5 @@ while true; do
     done
     sleep 2
 done &
-echo $!
 mkdir -p "$SCRIPT_CURRENT/.tmp"
 echo "$!|$REPOSITORY_ABS"> "$PID_FILE"
