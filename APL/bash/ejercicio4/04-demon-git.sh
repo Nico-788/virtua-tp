@@ -180,4 +180,4 @@ while true; do
     sleep 2
 done &
 mkdir -p "$SCRIPT_CURRENT/.tmp"
-echo "$!|$REPOSITORY_ABS"> "$PID_FILE"
+echo "$!|$REPOSITORY_ABS" >> "$PID_FILE"
