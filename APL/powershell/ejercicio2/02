@@ -1,0 +1,316 @@
+
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory=$true, HelpMessage="Ruta del archivo de la matriz de adyacencia")]
+    [ValidateScript({Test-Path $_ -PathType Leaf})]
+    [string]$matriz,
+    
+    [Parameter(ParameterSetName="Hub", HelpMessage="Determina qué estacion es el hub de la red")]
+    [switch]$hub,
+    
+    [Parameter(ParameterSetName="Camino", HelpMessage="Encuentra el camino más corto en tiempo")]
+    [switch]$camino,
+    
+    [Parameter(HelpMessage="Carácter para utilizarse como separador de columnas")]
+    [string]$separador = "|"
+)
+
+# Función para mostrar mensajes de error de manera amigable
+function Show-ErrorMessage {
+    param([string]$mensaje)
+    Write-Host "ERROR: $mensaje" -ForegroundColor Red
+    exit 1
+}
+
+# Función para leer y validar la matriz de adyacencia
+function Read-MatrizAdyacencia {
+    param(
+        [string]$archivoPath,
+        [string]$separadorChar
+    )
+    
+    try {
+        $lineas = Get-Content -Path $archivoPath -Encoding UTF8
+        
+        if ($lineas.Count -eq 0) {
+            Show-ErrorMessage "El archivo está vacío"
+        }
+        
+        $matriz = @()
+        foreach ($linea in $lineas) {
+            if ([string]::IsNullOrWhiteSpace($linea)) {
+                continue
+            }
+            
+            # Dividir la línea por el separador
+            $valores = $linea -split [regex]::Escape($separadorChar)
+            $filaNumeros = @()
+            
+            foreach ($valor in $valores) {
+                $valorLimpio = $valor.Trim()
+                if ($valorLimpio -match '^-?\d+\.?\d*$') {
+                    $filaNumeros += [double]$valorLimpio
+                } else {
+                    Show-ErrorMessage "Valor no numérico encontrado: '$valorLimpio'"
+                }
+            }
+            
+            $matriz += ,$filaNumeros
+        }
+        
+        # Validar que la matriz sea cuadrada
+        $dimension = $matriz.Count
+        foreach ($fila in $matriz) {
+            if ($fila.Count -ne $dimension) {
+                Show-ErrorMessage "La matriz no es cuadrada"
+            }
+        }
+        
+        # Validar diagonal principal y simetría
+        for ($i = 0; $i -lt $dimension; $i++) {
+            if ($matriz[$i][$i] -ne 0) {
+                Show-ErrorMessage "La diagonal principal debe contener solo ceros"
+            }
+            for ($j = 0; $j -lt $dimension; $j++) {
+                if ($matriz[$i][$j] -ne $matriz[$j][$i]) {
+                    Show-ErrorMessage "La matriz no es simétrica"
+                }
+            }
+        }
+        
+        Write-Host "Matriz válida cargada: ${dimension}x${dimension}" -ForegroundColor Green
+        return $matriz
+    }
+    catch {
+        Show-ErrorMessage "Error al leer el archivo: $($_.Exception.Message)"
+    }
+}
+
+# Función para encontrar el hub
+function Find-Hub {
+    param([array]$matriz)
+    
+    $dimension = $matriz.Count
+    $maxConexiones = 0
+    $estacionHub = 0
+    
+    Write-Host "`nContando conexiones por estacion:" -ForegroundColor White
+    
+    for ($i = 0; $i -lt $dimension; $i++) {
+        $conexiones = 0
+        for ($j = 0; $j -lt $dimension; $j++) {
+            if ($i -ne $j -and $matriz[$i][$j] -gt 0) {
+                $conexiones++
+            }
+        }
+        
+        Write-Host "Estacion $($i + 1): $conexiones conexiones" -ForegroundColor White
+        
+        if ($conexiones -gt $maxConexiones) {
+            $maxConexiones = $conexiones
+            $estacionHub = $i
+        }
+    }
+    
+    return @{
+        Estacion = $estacionHub + 1
+        Conexiones = $maxConexiones
+    }
+}
+
+# Función para buscar nodo con distancia mínima
+function Find-DistanciaMinima {
+    param(
+        [array]$distancias,
+        [array]$visitados,
+        [int]$dimension
+    )
+    
+    $min = 9999
+    $minIndex = -1
+    
+    for ($i = 0; $i -lt $dimension; $i++) {
+        if (-not $visitados[$i] -and $distancias[$i] -le $min) {
+            $min = $distancias[$i]
+            $minIndex = $i
+        }
+    }
+    
+    return $minIndex
+}
+
+# Función para reconstruir camino
+function Rebuild-Camino {
+    param(
+        [int]$destino,
+        [int]$origen,
+        [array]$predecesores
+    )
+    
+    $camino = @()
+    $nodoActual = $destino
+    
+    while ($nodoActual -ne $origen -and $nodoActual -ne -1) {
+        $camino = @($nodoActual + 1) + $camino
+        $nodoActual = $predecesores[$nodoActual]
+    }
+    
+    if ($nodoActual -eq $origen) {
+        $camino = @($origen + 1) + $camino
+        return ($camino -join " -> ")
+    }
+    
+    return ""
+}
+
+# Función para encontrar camino más corto
+function Find-CaminoMasCorto {
+    param([array]$matriz)
+    
+    $dimension = $matriz.Count
+    $INF = 9999
+    $distanciaMinimaGlobal = $INF
+    $origenCaminoCorto = -1
+    $destinoCaminoCorto = -1
+    $mejorCamino = ""
+    
+    Write-Host "Buscando camino más corto entre todas las estaciones..." -ForegroundColor Green
+    
+    # Ejecutar Dijkstra desde cada nodo
+    for ($nodoOrigen = 0; $nodoOrigen -lt $dimension; $nodoOrigen++) {
+        
+        # Inicializar arrays
+        $distancias = @($INF) * $dimension
+        $visitados = @($false) * $dimension
+        $predecesores = @(-1) * $dimension
+        
+        $distancias[$nodoOrigen] = 0
+        
+        # Algoritmo de Dijkstra
+        for ($count = 0; $count -lt ($dimension - 1); $count++) {
+            $u = Find-DistanciaMinima $distancias $visitados $dimension
+            
+            if ($u -eq -1) { break }
+            
+            $visitados[$u] = $true
+            
+            # Actualizar distancias de vecinos
+            for ($i = 0; $i -lt $dimension; $i++) {
+                if (-not $visitados[$i] -and $matriz[$u][$i] -gt 0) {
+                    $nuevaDistancia = $distancias[$u] + $matriz[$u][$i]
+                    if ($nuevaDistancia -lt $distancias[$i]) {
+                        $distancias[$i] = $nuevaDistancia
+                        $predecesores[$i] = $u
+                    }
+                }
+            }
+        }
+        
+        # Buscar distancia mínima desde este origen
+        for ($destino = 0; $destino -lt $dimension; $destino++) {
+            if ($destino -ne $nodoOrigen -and $distancias[$destino] -lt $distanciaMinimaGlobal -and $distancias[$destino] -ne $INF) {
+                $distanciaMinimaGlobal = $distancias[$destino]
+                $origenCaminoCorto = $nodoOrigen
+                $destinoCaminoCorto = $destino
+                $mejorCamino = Rebuild-Camino $destino $nodoOrigen $predecesores
+            }
+        }
+    }
+    
+    if ($origenCaminoCorto -ne -1) {
+        Write-Host "Camino más corto encontrado: desde estacion $($origenCaminoCorto + 1) hasta estacion $($destinoCaminoCorto + 1)" -ForegroundColor Cyan
+        Write-Host "Distancia: $distanciaMinimaGlobal minutos" -ForegroundColor Cyan
+        Write-Host "Ruta: $mejorCamino" -ForegroundColor Cyan
+        
+        return @{
+            Origen = $origenCaminoCorto + 1
+            Destino = $destinoCaminoCorto + 1
+            Tiempo = $distanciaMinimaGlobal
+            Ruta = $mejorCamino
+        }
+    }
+    
+    return $null
+}
+
+# Función para generar informe
+function Generate-Informe {
+    param(
+        [string]$archivoOriginal,
+        [hashtable]$hubInfo = $null,
+        [hashtable]$caminoInfo = $null
+    )
+    
+    $nombreBase = [System.IO.Path]::GetFileNameWithoutExtension($archivoOriginal)
+    $directorio = [System.IO.Path]::GetDirectoryName($archivoOriginal)
+    $archivoInforme = Join-Path $directorio "informe.$nombreBase"
+    
+    $contenido = @()
+    $contenido += "## Informe de análisis de red de transporte"
+    $contenido += ""
+    
+    if ($hubInfo) {
+        $contenido += "**Hub de la red:**"
+        $contenido += "Estacion $($hubInfo.Estacion) ($($hubInfo.Conexiones) conexiones)"
+        $contenido += ""
+    }
+    
+    if ($caminoInfo) {
+        $contenido += "**Camino más corto: entre Estacion $($caminoInfo.Origen) y Estacion $($caminoInfo.Destino):**"
+        $contenido += "**Tiempo total:** $($caminoInfo.Tiempo) minutos"
+        $contenido += "**Ruta:** $($caminoInfo.Ruta)"
+        $contenido += ""
+    }
+    
+    try {
+        $contenido | Out-File -FilePath $archivoInforme -Encoding UTF8 -Force
+        Write-Host "Informe generado: $archivoInforme" -ForegroundColor Green
+    }
+    catch {
+        Show-ErrorMessage "Error al escribir el informe: $($_.Exception.Message)"
+    }
+}
+
+# Script principal
+try {
+    Write-Host "=== Análisis de Red de Transporte ===" -ForegroundColor Cyan
+    Write-Host "Archivo de matriz: $matriz" -ForegroundColor Yellow
+    Write-Host "Separador: '$separador'" -ForegroundColor Yellow
+    
+    # Validar que al menos se especifique una operación
+    if (-not $hub -and -not $camino) {
+        Show-ErrorMessage "Debe especificar al menos una operación: -hub o -camino"
+    }
+    
+    # Leer matriz
+    $matrizAdyacencia = Read-MatrizAdyacencia $matriz $separador
+    
+    # Variables para informe
+    $hubInfo = $null
+    $caminoInfo = $null
+    
+    # Ejecutar análisis
+    if ($hub) {
+        Write-Host "`nBuscando hub de la red..." -ForegroundColor Green
+        $hubInfo = Find-Hub $matrizAdyacencia
+        Write-Host "`nHub encontrado: Estacion $($hubInfo.Estacion) con $($hubInfo.Conexiones) conexiones" -ForegroundColor Cyan
+    }
+    
+    if ($camino) {
+        Write-Host "`nBuscando caminos más cortos..." -ForegroundColor Green
+        $caminoInfo = Find-CaminoMasCorto $matrizAdyacencia
+        
+        if (-not $caminoInfo) {
+            Write-Host "No se encontraron caminos válidos en la red" -ForegroundColor Yellow
+        }
+    }
+    
+    # Generar informe
+    Write-Host "`nGenerando informe..." -ForegroundColor Green
+    Generate-Informe $matriz $hubInfo $caminoInfo
+    
+    Write-Host "`n=== Análisis completado exitosamente ===" -ForegroundColor Green
+}
+catch {
+    Show-ErrorMessage "Error inesperado: $($_.Exception.Message)"
+}
