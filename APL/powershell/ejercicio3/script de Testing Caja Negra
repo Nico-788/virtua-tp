@@ -1,0 +1,8 @@
+# Ejemplo básico (del enunciado)
+.\ejercicio3.ps1 -directorio test_logs_ejercicio3 -palabras 'USB','Invalid'
+
+# Buscar errores y eventos críticos  
+.\ejercicio3.ps1 -directorio test_logs_ejercicio3 -palabras 'ERROR','FAIL','CRITICAL'
+
+# Ver ayuda
+Get-Help .\ejercicio3.ps1 -Full
