@@ -1,0 +1,17 @@
+# Cambia TTL a 10 segundos
+./5toEjercicio.sh -n Argentina -t 10
+
+# Espera 5 segundos y ejecuta otra vez
+sleep 5
+./5toEjercicio.sh -n Argentina
+# Debería usar cache
+
+# Espera otros 6 segundos (total 11) y ejecuta
+sleep 6  
+./5toEjercicio.sh -n Argentina
+# Debería ir a API porque expiró
+
+#Como se normaliza la cadena para buscar en la API caracteres "raros" como la
+#ñ, ocurre que te lo fletea, así que si queres ver España en la cache tenes
+#que sacar la ñ corte:
+cat .tmp/espaa.cache
