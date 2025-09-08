@@ -1,0 +1,10 @@
+# FUNCIONA (solo hub)
+.\ejercicio2.ps1 -matriz "archivo.txt" -hub
+
+
+
+# FUNCIONA (solo camino)  
+.\ejercicio2.ps1 -matriz "archivo.txt" -camino
+
+# FALLA con mensaje claro
+.\ejercicio2.ps1 -matriz "archivo.txt" -hub -camino
