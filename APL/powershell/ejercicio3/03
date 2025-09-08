@@ -1,0 +1,202 @@
+# Virtualizacion de Hardware – APL 2025 – Q2
+# Ejercicio 3: Conteo de eventos en logs de sistemas
+# Integrantes del grupo: [Completar con los nombres de los integrantes]
+
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory=$true, HelpMessage="Ruta del directorio de logs a analizar")]
+    [ValidateScript({Test-Path $_ -PathType Container})]
+    [string]$directorio,
+    
+    [Parameter(Mandatory=$true, HelpMessage="Lista de palabras clave a contabilizar")]
+    [string[]]$palabras
+)
+
+# Funcion para mostrar mensajes de error de manera amigable
+function Show-ErrorMessage {
+    param([string]$mensaje)
+    Write-Host "ERROR: $mensaje" -ForegroundColor Red
+    exit 1
+}
+
+# Funcion para buscar archivos .log en el directorio especificado
+function Find-LogFiles {
+    param([string]$directorioPath)
+    
+    try {
+        # Buscar todos los archivos .log en el directorio
+        $archivosLog = Get-ChildItem -Path $directorioPath -Filter "*.log" -File
+        
+        if ($archivosLog.Count -eq 0) {
+            Show-ErrorMessage "No se encontraron archivos .log en el directorio especificado"
+        }
+        
+        Write-Host "Archivos .log encontrados: $($archivosLog.Count)" -ForegroundColor Green
+        foreach ($archivo in $archivosLog) {
+            Write-Host "  - $($archivo.Name)" -ForegroundColor White
+        }
+        
+        return $archivosLog
+    }
+    catch {
+        Show-ErrorMessage "Error al buscar archivos en el directorio: $($_.Exception.Message)"
+    }
+}
+
+# Funcion para procesar los archivos de log y contar eventos
+function Process-LogFiles {
+    param(
+        [array]$archivos,
+        [string[]]$palabrasClave
+    )
+    
+    # Inicializar array asociativo (hashtable) para contar eventos
+    # Esto equivale al array asociativo de AWK
+    $contadorEventos = @{}
+    
+    # Inicializar contadores para todas las palabras clave en 0
+    foreach ($palabra in $palabrasClave) {
+        $contadorEventos[$palabra.ToLower()] = 0
+    }
+    
+    Write-Host "`nProcesando archivos de log..." -ForegroundColor Green
+    Write-Host "Palabras clave a buscar: $($palabrasClave -join ', ')" -ForegroundColor Yellow
+    
+    # Procesar cada archivo de log
+    foreach ($archivo in $archivos) {
+        Write-Host "Procesando: $($archivo.Name)" -ForegroundColor Cyan
+        
+        try {
+            # Leer todas las lineas del archivo
+            $lineas = Get-Content -Path $archivo.FullName -Encoding UTF8
+            
+            # Procesar cada linea (equivalente al bucle principal de AWK)
+            foreach ($linea in $lineas) {
+                # Buscar cada palabra clave en la linea actual
+                foreach ($palabra in $palabrasClave) {
+                    $palabraLower = $palabra.ToLower()
+                    
+                    # Busqueda case-insensitive (equivalente a IGNORECASE=1 en AWK)
+                    if ($linea -match "(?i)$palabra") {
+                        $contadorEventos[$palabraLower]++
+                        # Break para evitar contar multiples veces en la misma linea
+                        # (equivalente al break en AWK)
+                        break
+                    }
+                }
+            }
+        }
+        catch {
+            Write-Warning "Error al procesar el archivo $($archivo.Name): $($_.Exception.Message)"
+            continue
+        }
+    }
+    
+    return $contadorEventos
+}
+
+# Funcion para mostrar los resultados ordenados
+function Show-Results {
+    param([hashtable]$resultados)
+    
+    Write-Host "`n=== RESULTADOS ===" -ForegroundColor Cyan
+    
+    # Ordenar los resultados alfabeticamente por clave
+    # (equivalente a PROCINFO["sorted_in"] = "@ind_str_asc" en AWK)
+    $resultadosOrdenados = $resultados.GetEnumerator() | Sort-Object Name
+    
+    # Mostrar cada resultado (equivalente al END block de AWK)
+    foreach ($item in $resultadosOrdenados) {
+        Write-Host "$($item.Name): $($item.Value)" -ForegroundColor White
+    }
+}
+
+# Funcion para generar archivo de resultados (funcionalidad adicional)
+function Generate-ResultsFile {
+    param(
+        [hashtable]$resultados,
+        [string]$directorioOriginal
+    )
+    
+    $archivoResultados = Join-Path $directorioOriginal "conteo_eventos_resultado.txt"
+    
+    try {
+        $contenido = @()
+        $contenido += "=== CONTEO DE EVENTOS EN LOGS ==="
+        $contenido += "Fecha de analisis: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        $contenido += "Directorio analizado: $directorioOriginal"
+        $contenido += ""
+        $contenido += "RESULTADOS:"
+        
+        # Ordenar y agregar resultados
+        $resultadosOrdenados = $resultados.GetEnumerator() | Sort-Object Name
+        foreach ($item in $resultadosOrdenados) {
+            $contenido += "$($item.Name): $($item.Value)"
+        }
+        
+        $contenido | Out-File -FilePath $archivoResultados -Encoding UTF8 -Force
+        Write-Host "`nArchivo de resultados generado: $archivoResultados" -ForegroundColor Green
+    }
+    catch {
+        Write-Warning "No se pudo generar el archivo de resultados: $($_.Exception.Message)"
+    }
+}
+
+# Script principal
+try {
+    Write-Host "=== Conteo de Eventos en Logs de Sistemas ===" -ForegroundColor Cyan
+    Write-Host "Directorio de logs: $directorio" -ForegroundColor Yellow
+    Write-Host "Palabras a buscar: $($palabras -join ', ')" -ForegroundColor Yellow
+    
+    # Validar que se proporcionaron palabras clave
+    if ($palabras.Count -eq 0 -or ($palabras.Count -eq 1 -and [string]::IsNullOrWhiteSpace($palabras[0]))) {
+        Show-ErrorMessage "Debe especificar al menos una palabra clave para buscar"
+    }
+    
+    # Buscar archivos .log en el directorio
+    $archivosLog = Find-LogFiles $directorio
+    
+    # Procesar los archivos y contar eventos
+    $resultados = Process-LogFiles $archivosLog $palabras
+    
+    # Mostrar resultados en pantalla
+    Show-Results $resultados
+    
+    # Generar archivo de resultados
+    Generate-ResultsFile $resultados $directorio
+    
+    Write-Host "`n=== Analisis completado exitosamente ===" -ForegroundColor Green
+}
+catch {
+    Show-ErrorMessage "Error inesperado durante la ejecucion: $($_.Exception.Message)"
+}
+
+<#
+.SYNOPSIS
+Analiza archivos de logs para contar ocurrencias de eventos especificos.
+
+.DESCRIPTION
+Este script busca todos los archivos .log en un directorio especificado y cuenta
+las ocurrencias de palabras clave proporcionadas. Las busquedas son case-insensitive
+y se procesan todos los archivos .log encontrados.
+
+.PARAMETER directorio
+Ruta del directorio que contiene los archivos .log a analizar.
+
+.PARAMETER palabras
+Array de palabras clave a buscar en los archivos de log.
+
+.EXAMPLE
+.\ejercicio3.ps1 -directorio "C:\logs" -palabras "USB", "Invalid"
+Busca las palabras "USB" e "Invalid" en todos los archivos .log del directorio C:\logs
+
+.EXAMPLE
+.\ejercicio3.ps1 -directorio ".\test_logs" -palabras "error", "warning", "critical"
+Busca multiples palabras clave en el directorio local test_logs
+
+.NOTES
+- Las busquedas son case-insensitive
+- Solo procesa archivos con extension .log
+- Genera un archivo de resultados en el directorio analizado
+- Utiliza arrays asociativos (hashtables) para el conteo de eventos
+#>
