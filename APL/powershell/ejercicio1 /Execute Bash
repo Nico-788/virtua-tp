@@ -1,0 +1,8 @@
+# Pantalla
+.\Ejercicio1.ps1 -directorio "test_data" -pantalla
+
+# Archivo específico
+.\Ejercicio1.ps1 -directorio "test_data" -archivo "output/resultado.json"
+
+# Directorio (ahora genera resultado.json automáticamente)
+.\Ejercicio1.ps1 -directorio "test_data" -archivo "output/resultado.json"
