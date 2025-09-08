@@ -1,0 +1,215 @@
+# Virtualización de Hardware – APL 2025 – Q2
+# Ejercicio 1: Análisis de resultados de encuestas de satisfacción de clientes
+# Integrantes del grupo: [Completar con los nombres de los integrantes]
+
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory=$true, HelpMessage="Ruta del directorio con los archivos de encuestas a procesar")]
+    [ValidateScript({Test-Path $_ -PathType Container})]
+    [string]$directorio,
+    
+    [Parameter(ParameterSetName="Archivo", HelpMessage="Ruta completa del archivo JSON de salida")]
+    [string]$archivo,
+    
+    [Parameter(ParameterSetName="Pantalla", HelpMessage="Muestra la salida por pantalla")]
+    [switch]$pantalla
+)
+
+# Función para mostrar mensajes de error de manera amigable
+function Show-ErrorMessage {
+    param([string]$mensaje)
+    Write-Host "ERROR: $mensaje" -ForegroundColor Red
+    exit 1
+}
+
+# Función para validar el formato de una línea de encuesta
+function Test-EncuestaFormat {
+    param([string]$linea)
+    
+    $campos = $linea -split '\|'
+    
+    # Verificar que tenga exactamente 5 campos
+    if ($campos.Length -ne 5) {
+        return $false
+    }
+    
+    # Verificar que ID_ENCUESTA sea numérico
+    if (-not ($campos[0] -match '^\d+$')) {
+        return $false
+    }
+    
+    # Verificar formato de fecha (yyyy-mm-dd hh:mm:ss)
+    if (-not ($campos[1] -match '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$')) {
+        return $false
+    }
+    
+    # Verificar que CANAL sea válido
+    if ($campos[2] -notin @('Telefono', 'Email', 'Chat')) {
+        return $false
+    }
+    
+    # Verificar que TIEMPO_RESPUESTA sea numérico
+    if (-not ($campos[3] -match '^\d+\.?\d*$')) {
+        return $false
+    }
+    
+    # Verificar que NOTA_SATISFACCION sea numérico entre 1 y 5
+    if (-not ($campos[4] -match '^[1-5]$')) {
+        return $false
+    }
+    
+    return $true
+}
+
+# Función para procesar una línea de encuesta
+function ConvertTo-EncuestaObject {
+    param([string]$linea)
+    
+    $campos = $linea -split '\|'
+    
+    return [PSCustomObject]@{
+        ID_ENCUESTA = [int]$campos[0]
+        FECHA = [datetime]::ParseExact($campos[1], "yyyy-MM-dd HH:mm:ss", $null)
+        CANAL = $campos[2].Trim()
+        TIEMPO_RESPUESTA = [double]$campos[3]
+        NOTA_SATISFACCION = [int]$campos[4]
+        FECHA_DIA = ([datetime]::ParseExact($campos[1], "yyyy-MM-dd HH:mm:ss", $null)).ToString("yyyy-MM-dd")
+    }
+}
+
+# Función para procesar todos los archivos de encuestas
+function Process-EncuestasFiles {
+    param([string]$directorioPath)
+    
+    $encuestas = @()
+    $archivosTexto = Get-ChildItem -Path $directorioPath -Filter "*.txt" -File
+    
+    if ($archivosTexto.Count -eq 0) {
+        Show-ErrorMessage "No se encontraron archivos de encuestas (.txt) en el directorio especificado."
+    }
+    
+    foreach ($archivo in $archivosTexto) {
+        Write-Host "Procesando archivo: $($archivo.Name)" -ForegroundColor Green
+        
+        try {
+            $contenido = Get-Content -Path $archivo.FullName -Encoding UTF8
+            
+            foreach ($linea in $contenido) {
+                if ([string]::IsNullOrWhiteSpace($linea)) {
+                    continue
+                }
+                
+                if (Test-EncuestaFormat $linea) {
+                    $encuesta = ConvertTo-EncuestaObject $linea
+                    $encuestas += $encuesta
+                } else {
+                    Write-Warning "Formato inválido en archivo $($archivo.Name): $linea"
+                }
+            }
+        }
+        catch {
+            Show-ErrorMessage "Error al procesar el archivo $($archivo.Name): $($_.Exception.Message)"
+        }
+    }
+    
+    if ($encuestas.Count -eq 0) {
+        Show-ErrorMessage "No se encontraron encuestas válidas para procesar."
+    }
+    
+    return $encuestas
+}
+
+# Función para calcular estadísticas por día y canal
+function Calculate-Estadisticas {
+    param([array]$encuestas)
+    
+    $resultado = @{}
+    
+    # Agrupar por fecha y canal
+    $grupos = $encuestas | Group-Object FECHA_DIA, CANAL
+    
+    foreach ($grupo in $grupos) {
+        $fecha, $canal = $grupo.Name -split ', '
+        
+        if (-not $resultado.ContainsKey($fecha)) {
+            $resultado[$fecha] = @{}
+        }
+        
+        $tiempoPromedio = ($grupo.Group | Measure-Object TIEMPO_RESPUESTA -Average).Average
+        $notaPromedio = ($grupo.Group | Measure-Object NOTA_SATISFACCION -Average).Average
+        
+        $resultado[$fecha][$canal] = @{
+            tiempo_respuesta_promedio = [math]::Round($tiempoPromedio, 1)
+            nota_satisfaccion_promedio = [math]::Round($notaPromedio, 0)
+        }
+    }
+    
+    return $resultado
+}
+
+# Función para convertir a JSON con formato personalizado
+function ConvertTo-FormattedJson {
+    param([hashtable]$datos)
+    
+    $json = ConvertTo-Json $datos -Depth 4
+    
+    # Formatear el JSON para mejor legibilidad
+    $json = $json -replace '(?m)^(  +"[^"]+": {)$', '$1'
+    $json = $json -replace '(?m)^(    +"[^"]+": )(\d+\.?\d*),$', '$1$2,'
+    $json = $json -replace '(?m)^(    +"[^"]+": )(\d+\.?\d*)$', '$1$2'
+    
+    return $json
+}
+
+# Script principal
+try {
+    Write-Host "=== Análisis de Encuestas de Satisfacción ===" -ForegroundColor Cyan
+    Write-Host "Directorio de entrada: $directorio" -ForegroundColor Yellow
+    
+    # Validar que al menos se especifique un parámetro de salida
+    if (-not $archivo -and -not $pantalla) {
+        Show-ErrorMessage "Debe especificar al menos uno: -archivo o -pantalla para la salida."
+    }
+    
+    # Procesar archivos de encuestas
+    $encuestas = Process-EncuestasFiles $directorio
+    Write-Host "Total de encuestas procesadas: $($encuestas.Count)" -ForegroundColor Green
+    
+    # Calcular estadísticas
+    $estadisticas = Calculate-Estadisticas $encuestas
+    
+    # Convertir a JSON
+    $jsonResult = ConvertTo-FormattedJson $estadisticas
+    
+    # Generar salida según parámetros
+    if ($pantalla) {
+        Write-Host "`n=== RESULTADO JSON ===" -ForegroundColor Cyan
+        Write-Host $jsonResult
+    }
+    
+    if ($archivo) {
+        try {
+            # Crear directorio padre si no existe
+            $directorioSalida = Split-Path $archivo -Parent
+            if ($directorioSalida -and -not (Test-Path $directorioSalida)) {
+                New-Item -ItemType Directory -Path $directorioSalida -Force | Out-Null
+            }
+            
+            # Escribir archivo JSON
+            $jsonResult | Out-File -FilePath $archivo -Encoding UTF8 -Force
+            Write-Host "Archivo JSON generado exitosamente: $archivo" -ForegroundColor Green
+        }
+        catch {
+            Show-ErrorMessage "Error al escribir el archivo de salida: $($_.Exception.Message)"
+        }
+    }
+    
+    Write-Host "`n=== Procesamiento completado exitosamente ===" -ForegroundColor Green
+}
+catch {
+    Show-ErrorMessage "Error inesperado durante la ejecución: $($_.Exception.Message)"
+}
+finally {
+    # Limpiar archivos temporales si los hubiera
+    # En este caso no se crean archivos temporales, pero se mantiene la estructura
+}
