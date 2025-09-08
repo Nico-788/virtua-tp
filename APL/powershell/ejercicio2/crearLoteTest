@@ -1,0 +1,54 @@
+#RECUERDEN PONER TODO EN LA MISMA CARPETA/UBICACIÓN DEL DIRECTORIO
+# Script para crear archivos de prueba del Ejercicio 2
+
+# Crear directorio de pruebas
+New-Item -ItemType Directory -Path "test_data_ejercicio2" -Force | Out-Null
+
+Write-Host "Creando archivos de prueba para el Ejercicio 2..." -ForegroundColor Green
+
+# Archivo de prueba 1: mapa_transporte.txt (ejemplo del enunciado)
+@"
+0|10|0|5
+10|0|4|0
+0|4|0|8
+5|0|8|0
+"@ | Out-File -FilePath "test_data_ejercicio2/mapa_transporte.txt" -Encoding UTF8
+
+# Archivo de prueba 2: red_pequena.txt (3x3)
+@"
+0|2|5
+2|0|3
+5|3|0
+"@ | Out-File -FilePath "test_data_ejercicio2/red_pequena.txt" -Encoding UTF8
+
+# Archivo de prueba 3: red_compleja.txt (5x5)
+@"
+0|1|4|0|0
+1|0|2|5|0
+4|2|0|1|3
+0|5|1|0|2
+0|0|3|2|0
+"@ | Out-File -FilePath "test_data_ejercicio2/red_compleja.txt" -Encoding UTF8
+
+# Archivo de prueba 4: red_separador_coma.csv (usando comas)
+@"
+0,3,8,0
+3,0,2,7
+8,2,0,4
+0,7,4,0
+"@ | Out-File -FilePath "test_data_ejercicio2/red_separador_coma.csv" -Encoding UTF8
+
+# Archivo de prueba 5: red_decimal.txt (con valores decimales)
+@"
+0|1.5|0|3.2
+1.5|0|2.8|0
+0|2.8|0|4.1
+3.2|0|4.1|0
+"@ | Out-File -FilePath "test_data_ejercicio2/red_decimal.txt" -Encoding UTF8
+
+Write-Host "Archivos de prueba creados en test_data_ejercicio2/" -ForegroundColor Green
+Write-Host ""
+Write-Host "Contenido del directorio:" -ForegroundColor Yellow
+Get-ChildItem -Path "test_data_ejercicio2" | ForEach-Object { Write-Host "  $($_.Name)" -ForegroundColor White }
+Write-Host ""
+Write-Host "LISTO! Ahora puedes probar el ejercicio2.ps1" -ForegroundColor Cyan
