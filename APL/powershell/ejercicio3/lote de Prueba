@@ -1,0 +1,85 @@
+# Script para crear archivos de prueba del Ejercicio 3
+
+# Crear directorio de pruebas
+New-Item -ItemType Directory -Path "test_logs_ejercicio3" -Force | Out-Null
+
+Write-Host "Creando archivos de prueba para el Ejercicio 3..." -ForegroundColor Green
+
+# Archivo de prueba 1: system.log (ejemplo del enunciado)
+@"
+Aug 23 10:00:01 server.local kernel: [256.789] USB device plugged in.
+Aug 23 10:00:05 server.local sshd[1234]: Invalid user from 192.168.1.1.
+Aug 23 10:00:10 server.local sudo[5678]: Command not found.
+Aug 23 10:00:15 server.local kernel: [258.123] USB device unplugged.
+Aug 23 10:00:20 server.local sshd[1234]: Invalid user from 192.168.1.2.
+Aug 23 10:00:25 server.local apache[9999]: Error 404 not found.
+Aug 23 10:00:30 server.local kernel: [260.456] USB storage detected.
+"@ | Out-File -FilePath "test_logs_ejercicio3/system.log" -Encoding UTF8
+
+# Archivo de prueba 2: application.log
+@"
+Aug 23 11:00:01 app.server INFO: Application started successfully.
+Aug 23 11:00:05 app.server ERROR: Database connection failed.
+Aug 23 11:00:10 app.server WARN: Invalid configuration detected.
+Aug 23 11:00:15 app.server INFO: Retrying database connection.
+Aug 23 11:00:20 app.server ERROR: Critical system failure.
+Aug 23 11:00:25 app.server INFO: System recovery initiated.
+Aug 23 11:00:30 app.server WARN: Memory usage above threshold.
+"@ | Out-File -FilePath "test_logs_ejercicio3/application.log" -Encoding UTF8
+
+# Archivo de prueba 3: security.log
+@"
+Aug 23 12:00:01 security.srv LOGIN: User admin logged in successfully.
+Aug 23 12:00:05 security.srv FAIL: Invalid login attempt from 10.0.0.1.
+Aug 23 12:00:10 security.srv LOGIN: User guest logged in successfully.
+Aug 23 12:00:15 security.srv FAIL: Invalid password for user root.
+Aug 23 12:00:20 security.srv LOGOUT: User admin logged out.
+Aug 23 12:00:25 security.srv FAIL: Account locked after multiple invalid attempts.
+Aug 23 12:00:30 security.srv LOGIN: User service logged in successfully.
+"@ | Out-File -FilePath "test_logs_ejercicio3/security.log" -Encoding UTF8
+
+# Archivo de prueba 4: network.log
+@"
+Aug 23 13:00:01 network.srv CONNECT: New connection from 192.168.1.100.
+Aug 23 13:00:05 network.srv ERROR: Network timeout occurred.
+Aug 23 13:00:10 network.srv CONNECT: New connection from 192.168.1.101.
+Aug 23 13:00:15 network.srv DISCONNECT: Connection lost to 192.168.1.100.
+Aug 23 13:00:20 network.srv ERROR: Packet loss detected.
+Aug 23 13:00:25 network.srv CONNECT: New connection from 192.168.1.102.
+Aug 23 13:00:30 network.srv INFO: Network status: healthy.
+"@ | Out-File -FilePath "test_logs_ejercicio3/network.log" -Encoding UTF8
+
+# Archivo que NO es .log para probar que se ignora
+@"
+Este archivo no deberia ser procesado porque no tiene extension .log
+"@ | Out-File -FilePath "test_logs_ejercicio3/noeslog.txt" -Encoding UTF8
+
+Write-Host "Archivos de prueba creados en test_logs_ejercicio3/" -ForegroundColor Green
+Write-Host ""
+Write-Host "Contenido del directorio:" -ForegroundColor Yellow
+Get-ChildItem -Path "test_logs_ejercicio3" | ForEach-Object { 
+    if ($_.Extension -eq ".log") {
+        Write-Host "  $($_.Name) (sera procesado)" -ForegroundColor Green
+    } else {
+        Write-Host "  $($_.Name) (sera ignorado)" -ForegroundColor Gray
+    }
+}
+
+Write-Host ""
+Write-Host "=== EJEMPLOS DE USO ===" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "1. Buscar palabras del ejemplo original:" -ForegroundColor White
+Write-Host "   .\ejercicio3.ps1 -directorio test_logs_ejercicio3 -palabras 'USB','Invalid'" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "2. Buscar errores y conexiones:" -ForegroundColor White
+Write-Host "   .\ejercicio3.ps1 -directorio test_logs_ejercicio3 -palabras 'ERROR','CONNECT'" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "3. Buscar multiples tipos de eventos:" -ForegroundColor White
+Write-Host "   .\ejercicio3.ps1 -directorio test_logs_ejercicio3 -palabras 'LOGIN','FAIL','ERROR','USB'" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "4. Ver ayuda del script:" -ForegroundColor White
+Write-Host "   Get-Help .\ejercicio3.ps1 -Full" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "Resultados esperados para el ejemplo 1:" -ForegroundColor Cyan
+Write-Host "Invalid: 3" -ForegroundColor White
+Write-Host "USB: 3" -ForegroundColor White
