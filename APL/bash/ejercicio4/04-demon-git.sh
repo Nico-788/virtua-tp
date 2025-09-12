@@ -166,22 +166,6 @@ if [[ -z "$ARCH_LOG" || ! -f "$ARCH_LOG" || "$ARCH_LOG" != *.log ]]; then
     exit 1
 fi
 
-limpiezaTmp() {
-    tmpfile=$(mktemp)
-    if [ -f "$PID_FILE" ]; then
-        while IFS="|" read -r PID REPO; do
-            if [ "$PID" != "$$" ]; then
-                echo "$PID|$REPO" >> "$tmpfile"
-            fi
-        done < "$PID_FILE"
-        mv "$tmpfile" "$PID_FILE"
-    fi
-    if [ ! -s "$PID_FILE" ]; then
-        rm -rf "$SCRIPT_CURRENT/.tmp"
-    fi
-}
-trap limpiezaTmp SIGINT SIGTERM
-
 ARCH_CONFIG_ABS=$(realpath "$ARCH_CONFIG")
 ARCH_LOG_ABS=$(realpath "$ARCH_LOG")
 cd "$REPOSITORY_ABS"
