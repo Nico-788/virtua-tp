@@ -2,9 +2,9 @@
 
 function ayuda() {
     echo -e "\e[1mNAME\e[0m"
-    echo -e "\t01-procesador-encuestas"
+    echo -e "\t04-demon-git.sh"
     echo -e "\n\e[1mSYNOPSIS\e[0m"
-    echo -e "\t ./01-procesador-encuestas OPTION DIR OPTION [FILE]"
+    echo -e "\t ./04-demon-git.sh "
     echo -e "\n\e[1mDESCRIPTION\e[0m"
     echo -e "\tProcesa los archivos .txt que almacenan encuestas el siguiente formato:"
     echo -e "\n\e[1m\tID_ENCUESTA|FECHA|CANAL|TIEMPO_RESPUESTA|NOTA_SATISFACCION\e[0m"
@@ -146,38 +146,35 @@ ARCH_CONFIG_ABS=$(realpath "$ARCH_CONFIG")
 ARCH_LOG_ABS=$(realpath "$ARCH_LOG")
 cd "$REPOSITORY_ABS"
 
-declare -a archivosFiltradosPrevios=()
+LAST_COMMIT=$(git rev-parse main)
+
 while true; do
-    mapfile -t archivosStaged < <(git diff --cached --name-only)
+    CURRENT_COMMIT=$(git rev-parse main)
 
-    archivosFiltrados=()
-    for archActual in "${archivosStaged[@]}"; do
-        archActualAbs=$(realpath "$archActual") #paso archActual a ruta absoluta
+    if [ "$CURRENT_COMMIT" != "$LAST_COMMIT" ]; then
+        
+        mapfile -t archivosCommit < <(git diff --name-only "$LAST_COMMIT" "$CURRENT_COMMIT")
 
-        # Voy a sacar de la evaluacion a los archivos ya escaneados y a los de log y configuracion
-        # " ${archivosFiltradosPrevios[*]} " pongo todos los valores en una misma cadena separada por espacios
-        if [[ ! " ${archivosFiltradosPrevios[*]} " =~ " $archActualAbs " ]] \
-           && [[ "$archActualAbs" != "$ARCH_CONFIG_ABS" ]] \
-           && [[ "$archActualAbs" != "$ARCH_LOG_ABS" ]]; then
-            archivosFiltrados+=("$archActual")
-            archivosFiltradosPrevios+=("$archActualAbs")
-        fi
-    done
+        for file in "${archivosCommit[@]}"; do
+            [ ! -f "$file" ] && continue  
 
-    for file in "${archivosFiltrados[@]}"; do
-        for pal in "${palabrasBuscar[@]}"; do
-            if grep -q "$pal" "$file"; then
-                echo "[$(date +"%Y-%m-%d %H:%M:%S")] Alerta: palabra '$pal' encontrada en $(realpath "$file")" >> "$ARCH_LOG_ABS"
-            fi
+            for pal in "${palabrasBuscar[@]}"; do
+                if grep -q "$pal" "$file"; then
+                    echo "[$(date +"%Y-%m-%d %H:%M:%S")] Alerta: palabra '$pal' encontrada en $(realpath "$file")" >> "$ARCH_LOG_ABS"
+                fi
+            done
+
+            for pat in "${patronesRegex[@]}"; do
+                if grep -Eq "$pat" "$file"; then
+                    echo "[$(date +"%Y-%m-%d %H:%M:%S")] Alerta: patrón '$pat' encontrado en $(realpath "$file")" >> "$ARCH_LOG_ABS"
+                fi
+            done
         done
 
-        for pat in "${patronesRegex[@]}"; do
-            if grep -q "$pat" "$file"; then
-                echo "[$(date +"%Y-%m-%d %H:%M:%S")] Alerta: patrón '$pat' encontrado en $(realpath "$file")" >> "$ARCH_LOG_ABS"
-            fi
-        done
-    done
-    sleep 2
+        LAST_COMMIT=$CURRENT_COMMIT
+    fi
+
+    sleep 5
 done &
 mkdir -p "$SCRIPT_CURRENT/.tmp"
 echo "$!|$REPOSITORY_ABS" >> "$PID_FILE"

@@ -25,3 +25,7 @@
 [2025-09-05 18:34:45] Alerta: palabra 'API_KEY' encontrada en /home/nicolas/virtua-tp/APL/bash/ejercicio4/add.txt
 [2025-09-05 18:34:45] Alerta: palabra 'Distancia' encontrada en /home/nicolas/virtua-tp/APL/bash/ejercicio4/add.txt
 [2025-09-05 18:34:45] Alerta: patrón '.*palabra.*' encontrado en /home/nicolas/virtua-tp/APL/bash/ejercicio4/add.txt
+[2025-09-06 00:16:02] Alerta: palabra 'password' encontrada en /home/nicolas/virtua-tp/APL/bash/ejercicio5/add.txt
+[2025-09-06 00:16:02] Alerta: palabra 'API_KEY' encontrada en /home/nicolas/virtua-tp/APL/bash/ejercicio5/add.txt
+[2025-09-06 00:16:02] Alerta: palabra 'Distancia' encontrada en /home/nicolas/virtua-tp/APL/bash/ejercicio5/add.txt
+[2025-09-06 00:16:02] Alerta: patrón '.*palabra.*' encontrado en /home/nicolas/virtua-tp/APL/bash/ejercicio5/add.txt
