@@ -4,19 +4,22 @@ function ayuda() {
     echo -e "\e[1mNAME\e[0m"
     echo -e "\t04-demon-git.sh"
     echo -e "\n\e[1mSYNOPSIS\e[0m"
-    echo -e "\t ./04-demon-git.sh "
+    echo -e "\t ./04-demon-git.sh REPO [CONFIGURACON] [LOG] [KILL]"
     echo -e "\n\e[1mDESCRIPTION\e[0m"
-    echo -e "\tProcesa los archivos .txt que almacenan encuestas el siguiente formato:"
-    echo -e "\n\e[1m\tID_ENCUESTA|FECHA|CANAL|TIEMPO_RESPUESTA|NOTA_SATISFACCION\e[0m"
+    echo -e "\tMonitorea la rama de un repositorio de Git para detectar credenciales o datos sensibles."
+    echo -e "\n\tEl demonio lee un archivo de conficuracion que contiene una lista de palabras clave o patrones regex a buscar."
     echo -e "\n\tLos argumentos obligatorios para las opciones largas también son obligatorios para las opciones cortas."
-    echo -e "\n\t\e[1m-a, --archivo=FILE\e[0m"
-    echo -e "\t\truta completa del archivo JSON de salida. No se puede usar con -p / --pantalla."
-    echo -e "\n\t\e[1m-d, --directorio=DIRECTORY\e[0m"
-    echo -e "\t\truta del directorio con los archivos a procesar."
+    echo -e "\n\t\e[1m-r, --repo=DIRECTORY\e[0m"
+    echo -e "\t\truta del repositorio de git"
+    echo -e "\n\t\e[1m-c, --configuracion=FILE\e[0m"
+    echo -e "\t\truta del archivo con los patrones o palabras a buscar."
     echo -e "\n\t\e[1m-h, --help\e[0m"
     echo -e "\t\tayuda para el uso del comandos"
-    echo -e "\n\t\e[1m-p, --pantalla\e[0m"
-    echo -e "\t\tmuestra la salida por pantalla. No se puede usar con -a / --archivo."
+    echo -e "\n\t\e[1m-k, --kill\e[0m"
+    echo -e "\t\tflag para matar el proceso. Debe especificarse junto -r o --repo"
+    echo -e "\n\t\e[1m-l, --log\e[0m"
+    echo -e "\t\truta del archivo log a guardar las coincidencias encontradas."
+    echo -e "\t\tSe necesita un archivo de extensión .log."
 }
 
 options=$(getopt -o r:c:l:kh --l repo:,configuracion:,log:,kill,help -- "$@" 2> /dev/null)
@@ -58,7 +61,8 @@ do
             break
             ;;
         *)
-            echo error
+            echo Error: parametros mal especificados.
+            echo "Utilice -h o --help para ayuda"
             exit 1
             ;;
     esac
@@ -87,27 +91,47 @@ PID_FILE="$SCRIPT_CURRENT/.tmp/demon_pid.conf"
 
 if [ "$KILL" = true ]; then
     if [ -s "$PID_FILE" ]; then
+        FOUND=false
         while IFS="|" read -r PID REPO; do
             if [ "$REPOSITORY_ABS" = "$REPO" ]; then
-                kill $PID
-                break;
-            else
-                echo "Error: repositorio no monitoreado"
+                kill "$PID" 2>/dev/null
+                sed -i "/^$PID/d" "$PID_FILE"
+                FOUND=true
+                break
             fi
         done < "$PID_FILE"
 
-        if ps -p "$PID" > /dev/null; then
-            echo "Error: El proceso no puedo matarse"
+        if [ "$FOUND" = false ]; then
+            echo "Error: repositorio no monitoreado"
+            exit 1
+        fi
+
+        if ps -p "$PID" > /dev/null 2>&1; then
+            echo "Error: el proceso no pudo matarse"
             exit 1
         else
-            rm -r "$SCRIPT_CURRENT/.tmp"
+            # Si el archivo quedó vacío, lo borro junto con la carpeta
+            if [ ! -s "$PID_FILE" ]; then
+                rm -rf "$SCRIPT_CURRENT/.tmp"
+            fi
             echo "Proceso finalizado"
             exit 0
         fi
     else
-        echo "Error: El proceso no existe"
+        echo "Error: el proceso no existe"
         exit 1
     fi
+fi
+
+if [ -f "$PID_FILE" ]; then
+    while IFS="|" read -r PID REPO; do
+        if ps -p "$PID" > /dev/null 2>&1; then
+            if [ "$REPO" = "$REPOSITORY_ABS" ]; then
+                echo "Error: ya existe un demonio monitoreando $REPOSITORY_ABS con PID $PID"
+                exit 1
+            fi
+        fi
+    done < "$PID_FILE"
 fi
 
 if [[ -n "$ARCH_CONFIG" && -f "$ARCH_CONFIG" ]]; then
@@ -136,11 +160,27 @@ else
     exit 1
 fi
 
-if [[ -z "$ARCH_LOG" && ! -f "$ARCH_LOG" && "$ARCH_LOG" != *.log ]]; then
+if [[ -z "$ARCH_LOG" || ! -f "$ARCH_LOG" || "$ARCH_LOG" != *.log ]]; then
     echo "Error: especifique una ruta de archivo de configuraciones valido"
     echo "Utilice -h o --help para ayuda"
     exit 1
 fi
+
+limpiezaTmp() {
+    tmpfile=$(mktemp)
+    if [ -f "$PID_FILE" ]; then
+        while IFS="|" read -r PID REPO; do
+            if [ "$PID" != "$$" ]; then
+                echo "$PID|$REPO" >> "$tmpfile"
+            fi
+        done < "$PID_FILE"
+        mv "$tmpfile" "$PID_FILE"
+    fi
+    if [ ! -s "$PID_FILE" ]; then
+        rm -rf "$SCRIPT_CURRENT/.tmp"
+    fi
+}
+trap limpiezaTmp SIGINT SIGTERM
 
 ARCH_CONFIG_ABS=$(realpath "$ARCH_CONFIG")
 ARCH_LOG_ABS=$(realpath "$ARCH_LOG")
