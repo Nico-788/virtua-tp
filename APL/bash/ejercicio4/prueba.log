@@ -62,3 +62,6 @@
 [2025-09-12 16:52:00] Alerta: patrón '^.*API_KEY\s*=\s*['"].*['"].*$' encontrado en /home/nicolas/virtua-tp/APL/config.js
 [2025-09-12 16:52:01] Alerta: palabra 'API_KEY' encontrada en /home/nicolas/virtua-tp/APL/config.js
 [2025-09-12 16:52:01] Alerta: patrón '^.*API_KEY\s*=\s*['"].*['"].*$' encontrado en /home/nicolas/virtua-tp/APL/config.js
+[2025-09-12 18:26:44] Alerta: patrón '.*palabra.*' encontrado en /home/nicolas/virtua-tp/APL/bash/ejercicio4/04-demon-git.sh
+[2025-09-12 18:26:45] Alerta: patrón '.*palabra.*' encontrado en /home/nicolas/virtua-tp/APL/bash/ejercicio4/04-demon-git.sh
+[2025-09-12 18:26:45] Alerta: patrón '.*palabra.*' encontrado en /home/nicolas/virtua-tp/APL/bash/ejercicio4/04-demon-git.sh
