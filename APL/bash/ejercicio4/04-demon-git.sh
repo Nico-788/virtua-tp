@@ -105,18 +105,12 @@ if [ "$KILL" = true ]; then
             echo "Error: repositorio no monitoreado"
             exit 1
         fi
-
+        sleep 5
         if ps -p "$PID" > /dev/null 2>&1; then
             echo "Error: el proceso no pudo matarse"
             exit 1
-        else
-            # Si el archivo quedó vacío, lo borro junto con la carpeta
-            if [ ! -s "$PID_FILE" ]; then
-                rm -rf "$SCRIPT_CURRENT/.tmp"
-            fi
-            echo "Proceso finalizado"
-            exit 0
         fi
+        exit 0
     else
         echo "Error: el proceso no existe"
         exit 1
@@ -170,35 +164,57 @@ ARCH_CONFIG_ABS=$(realpath "$ARCH_CONFIG")
 ARCH_LOG_ABS=$(realpath "$ARCH_LOG")
 cd "$REPOSITORY_ABS"
 
-LAST_COMMIT=$(git rev-parse main)
-
-while true; do
-    CURRENT_COMMIT=$(git rev-parse main)
-
-    if [ "$CURRENT_COMMIT" != "$LAST_COMMIT" ]; then
+demon(){
+    limpiezaTmp() { 
+        echo "Limpiando..." 
+        tmpfile=$(mktemp) 
+        if [ -f "$PID_FILE" ]; then 
+            while IFS="|" read -r PID REPO; do 
+                if [ "$PID" != "$$" ]; then 
+                    echo "$PID|$REPO" >> "$tmpfile" 
+                fi 
+            done < "$PID_FILE" 
+            mv "$tmpfile" "$PID_FILE" 
+        fi 
         
-        mapfile -t archivosCommit < <(git diff --name-only "$LAST_COMMIT" "$CURRENT_COMMIT")
+        if [ ! -s "$PID_FILE" ]; then 
+            echo "Archivo vacío, borrando carpeta tmp" 
+            rm -r "$SCRIPT_CURRENT/.tmp" 
+        fi
+        exit 0
+    }
+    trap limpiezaTmp SIGINT SIGTERM
+    LAST_COMMIT=$(git rev-parse main)
 
-        for file in "${archivosCommit[@]}"; do
-            [ ! -f "$file" ] && continue  
+    while true; do
+        CURRENT_COMMIT=$(git rev-parse main)
 
-            for pal in "${palabrasBuscar[@]}"; do
-                if grep -q "$pal" "$file"; then
-                    echo "[$(date +"%Y-%m-%d %H:%M:%S")] Alerta: palabra '$pal' encontrada en $(realpath "$file")" >> "$ARCH_LOG_ABS"
-                fi
+        if [ "$CURRENT_COMMIT" != "$LAST_COMMIT" ]; then
+            
+            mapfile -t archivosCommit < <(git diff --name-only "$LAST_COMMIT" "$CURRENT_COMMIT")
+
+            for file in "${archivosCommit[@]}"; do
+                [ ! -f "$file" ] && continue  
+
+                for pal in "${palabrasBuscar[@]}"; do
+                    if grep -q "$pal" "$file"; then
+                        echo "[$(date +"%Y-%m-%d %H:%M:%S")] Alerta: palabra '$pal' encontrada en $(realpath "$file")" >> "$ARCH_LOG_ABS"
+                    fi
+                done
+
+                for pat in "${patronesRegex[@]}"; do
+                    if grep -Eq "$pat" "$file"; then
+                        echo "[$(date +"%Y-%m-%d %H:%M:%S")] Alerta: patrón '$pat' encontrado en $(realpath "$file")" >> "$ARCH_LOG_ABS"
+                    fi
+                done
             done
 
-            for pat in "${patronesRegex[@]}"; do
-                if grep -Eq "$pat" "$file"; then
-                    echo "[$(date +"%Y-%m-%d %H:%M:%S")] Alerta: patrón '$pat' encontrado en $(realpath "$file")" >> "$ARCH_LOG_ABS"
-                fi
-            done
-        done
+            LAST_COMMIT=$CURRENT_COMMIT
+        fi
 
-        LAST_COMMIT=$CURRENT_COMMIT
-    fi
-
-    sleep 5
-done &
+        sleep 5
+    done
+}
 mkdir -p "$SCRIPT_CURRENT/.tmp"
+demon &
 echo "$!|$REPOSITORY_ABS" >> "$PID_FILE"
