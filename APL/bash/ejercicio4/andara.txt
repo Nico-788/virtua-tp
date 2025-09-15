@@ -1,0 +1,362 @@
+#!/bin/bash
+
+# Variables globales para cleanup
+PID_FILE=""
+MONITOR_PID=""
+DAEMON_MODE=false
+
+function cleanup() {
+    if [ "$DAEMON_MODE" = true ]; then
+        # Limpiar proceso de monitoreo
+        if [ -n "$MONITOR_PID" ] && kill -0 "$MONITOR_PID" 2>/dev/null; then
+            kill "$MONITOR_PID" 2>/dev/null
+        fi
+        
+        # Limpiar archivo PID
+        if [ -n "$PID_FILE" ] && [ -f "$PID_FILE" ]; then
+            if [ -n "$REPOSITORY_ABS" ]; then
+                sed -i "\|$REPOSITORY_ABS|d" "$PID_FILE" 2>/dev/null
+                if [ ! -s "$PID_FILE" ]; then
+                    rm -f "$PID_FILE"
+                fi
+            fi
+        fi
+    fi
+}
+
+trap cleanup EXIT INT TERM
+
+function daemonize() {
+    if [ "$1" = "--daemon-mode" ]; then
+        DAEMON_MODE=true
+        shift
+        return 0
+    fi
+    
+    exec "$0" --daemon-mode "$@" </dev/null >/dev/null 2>&1 &
+    echo "Demonio iniciado con PID $!"
+    exit 0
+}
+
+function ayuda() {
+    echo -e "\e[1mNAME\e[0m"
+    echo -e "\t04-demon-git.sh"
+    echo -e "\n\e[1mSYNOPSIS\e[0m"
+    echo -e "\t ./04-demon-git.sh REPO [CONFIGURACON] [LOG] [KILL]"
+    echo -e "\n\e[1mDESCRIPTION\e[0m"
+    echo -e "\tMonitorea la rama de un repositorio de Git para detectar credenciales o datos sensibles."
+    echo -e "\n\tEl demonio lee un archivo de conficuracion que contiene una lista de palabras clave o patrones regex a buscar."
+    echo -e "\n\tLos argumentos obligatorios para las opciones largas también son obligatorios para las opciones cortas."
+    echo -e "\n\t\e[1m-r, --repo=DIRECTORY\e[0m"
+    echo -e "\t\truta del repositorio de git"
+    echo -e "\n\t\e[1m-c, --configuracion=FILE\e[0m"
+    echo -e "\t\truta del archivo con los patrones o palabras a buscar."
+    echo -e "\n\t\e[1m-h, --help\e[0m"
+    echo -e "\t\tayuda para el uso del comandos"
+    echo -e "\n\t\e[1m-k, --kill\e[0m"
+    echo -e "\t\tflag para matar el proceso. Debe especificarse junto -r o --repo"
+    echo -e "\n\t\e[1m-l, --log\e[0m"
+    echo -e "\t\truta del archivo log a guardar las coincidencias encontradas."
+    echo -e "\t\tSe necesita un archivo de extensión .log."
+}
+
+function get_main_branch() {
+    local repo="$1"
+    local branch
+    
+    # Intentar obtener rama por defecto del remote
+    branch=$(git -C "$repo" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')
+    
+    # Si no existe, buscar ramas comunes
+    if [ -z "$branch" ]; then
+        for common_branch in main master develop; do
+            if git -C "$repo" show-ref --verify --quiet "refs/heads/$common_branch"; then
+                branch="$common_branch"
+                break
+            fi
+        done
+    fi
+    
+    # Como último recurso, usar rama actual
+    if [ -z "$branch" ]; then
+        branch=$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)
+    fi
+    
+    echo "$branch"
+}
+
+function validate_regex_patterns() {
+    local -n patterns_ref=$1
+    local valid_patterns=()
+    
+    for pattern in "${patterns_ref[@]}"; do
+        if echo "test" | grep -Eq "$pattern" 2>/dev/null; then
+            valid_patterns+=("$pattern")
+        else
+            echo "Warning: patrón regex inválido ignorado: $pattern" >&2
+        fi
+    done
+    
+    patterns_ref=("${valid_patterns[@]}")
+}
+
+function monitor_repository() {
+    local repository="$1"
+    local config_file="$2"
+    local log_file="$3"
+    
+    cd "$repository" || {
+        echo "Error: no se puede acceder al repositorio $repository" >&2
+        exit 1
+    }
+    
+    # Detectar rama principal
+    local main_branch
+    main_branch=$(get_main_branch "$repository")
+    
+    if [ -z "$main_branch" ]; then
+        echo "Error: no se puede determinar la rama principal del repositorio" >&2
+        exit 1
+    fi
+    
+    local last_commit
+    last_commit=$(git rev-parse "$main_branch" 2>/dev/null)
+    
+    if [ -z "$last_commit" ]; then
+        echo "Error: no se puede obtener el commit de la rama $main_branch" >&2
+        exit 1
+    fi
+    
+    # Leer configuración
+    declare -a palabrasBuscar
+    declare -a patronesRegex
+    
+    while IFS= read -r linea || [ -n "$linea" ]; do
+        [[ "$linea" =~ ^[[:space:]]*$ ]] && continue
+        [[ "$linea" =~ ^[[:space:]]*# ]] && continue
+        
+        if [[ "$linea" == regex:* ]]; then
+            patronesRegex+=("${linea#regex:}")
+        else
+            palabrasBuscar+=("$linea")
+        fi
+    done < "$config_file"
+    
+    validate_regex_patterns patronesRegex
+    
+    echo "[$(date +"%Y-%m-%d %H:%M:%S")] Demonio iniciado - Monitoreando rama '$main_branch' en $repository" >> "$log_file"
+    
+    # Loop principal de monitoreo
+    while true; do
+        local current_commit
+        current_commit=$(git rev-parse "$main_branch" 2>/dev/null)
+        
+        if [ -z "$current_commit" ]; then
+            echo "[$(date +"%Y-%m-%d %H:%M:%S")] Error: no se puede obtener commit actual" >> "$log_file"
+            sleep 10
+            continue
+        fi
+        
+        if [ "$current_commit" != "$last_commit" ]; then
+            echo "[$(date +"%Y-%m-%d %H:%M:%S")] Cambio detectado: $last_commit -> $current_commit" >> "$log_file"
+            
+            local archivos_modificados
+            mapfile -t archivos_modificados < <(git diff --name-only "$last_commit" "$current_commit" 2>/dev/null)
+            
+            for file in "${archivos_modificados[@]}"; do
+                [ ! -f "$file" ] && continue
+                [ ! -r "$file" ] && continue
+                
+                for palabra in "${palabrasBuscar[@]}"; do
+                    if grep -q "$palabra" "$file" 2>/dev/null; then
+                        echo "[$(date +"%Y-%m-%d %H:%M:%S")] Alerta: palabra '$palabra' encontrada en $(realpath "$file")" >> "$log_file"
+                    fi
+                done
+                
+                for patron in "${patronesRegex[@]}"; do
+                    if grep -Eq "$patron" "$file" 2>/dev/null; then
+                        echo "[$(date +"%Y-%m-%d %H:%M:%S")] Alerta: patrón '$patron' encontrado en $(realpath "$file")" >> "$log_file"
+                    fi
+                done
+            done
+            
+            last_commit="$current_commit"
+        fi
+        
+        # Sleep interruptible
+        sleep 5 &
+        MONITOR_PID=$!
+        wait $MONITOR_PID
+        MONITOR_PID=""
+    done
+}
+
+# Verificar modo demonio
+if [ "$1" = "--daemon-mode" ]; then
+    DAEMON_MODE=true
+    shift
+    
+    # Daemonización verdadera
+    cd /
+    umask 0
+    exec </dev/null >/dev/null 2>&1
+fi
+
+# Parseo de opciones
+options=$(getopt -o r:c:l:kh --l repo:,configuracion:,log:,kill,help -- "$@" 2> /dev/null)
+if [ "$?" != "0" ]; then
+    echo 'Opciones incorrectas.'
+    echo "Utilice -h o --help para ayuda"
+    exit 1
+fi
+
+eval set -- "$options"
+
+KILL=false
+
+while true; do
+    case "$1" in
+        -r | --repo)
+            REPOSITORY="$2"
+            shift 2
+            ;;
+        -c | --configuracion)
+            ARCH_CONFIG="$2"
+            shift 2
+            ;;
+        -l | --log)
+            ARCH_LOG="$2"
+            shift 2
+            ;;
+        -k | --kill)
+            KILL=true
+            shift 1
+            ;;
+        -h | --help)
+            HELP=true
+            shift 1
+            ;;
+        --)
+            break
+            ;;
+        *)
+            echo "Error: parametros mal especificados."
+            echo "Utilice -h o --help para ayuda"
+            exit 1
+            ;;
+    esac
+done
+
+if [ "$HELP" = true ]; then
+    ayuda
+    exit 0
+fi
+
+# Validaciones
+if [[ -n "$REPOSITORY" && -d "$REPOSITORY" ]]; then
+    if ! git -C "$REPOSITORY" rev-parse --is-inside-work-tree &>/dev/null; then
+        echo "Error: ingrese un repositorio valido"
+        exit 1
+    fi 
+else
+    echo "Error: especifique una ruta de repositorio valido"
+    echo "Utilice -h o --help para ayuda"
+    exit 1
+fi
+
+REPOSITORY_ABS="$(realpath "$REPOSITORY")"
+
+# Archivo PID en /tmp (corregido según especificación)
+PID_FILE="/tmp/demon_git_${USER}.pid"
+
+# Manejo del flag kill
+if [ "$KILL" = true ]; then
+    if [ -f "$PID_FILE" ] && [ -s "$PID_FILE" ]; then
+        FOUND=false
+        while IFS="|" read -r PID REPO; do
+            if [ "$REPOSITORY_ABS" = "$REPO" ]; then
+                if kill "$PID" 2>/dev/null; then
+                    sed -i "\|^$PID|.*|$REPOSITORY_ABS\$|d" "$PID_FILE"
+                    echo "Proceso finalizado exitosamente"
+                    FOUND=true
+                    
+                    if [ ! -s "$PID_FILE" ]; then
+                        rm -f "$PID_FILE"
+                    fi
+                    exit 0
+                else
+                    echo "Error: el proceso no pudo ser terminado"
+                    exit 1
+                fi
+            fi
+        done < "$PID_FILE"
+
+        if [ "$FOUND" = false ]; then
+            echo "Error: repositorio no monitoreado"
+            exit 1
+        fi
+    else
+        echo "Error: no hay procesos demonio ejecutándose"
+        exit 1
+    fi
+fi
+
+# Verificar demonios existentes
+if [ -f "$PID_FILE" ]; then
+    while IFS="|" read -r PID REPO; do
+        if ps -p "$PID" > /dev/null 2>&1; then
+            if [ "$REPO" = "$REPOSITORY_ABS" ]; then
+                echo "Error: ya existe un demonio monitoreando $REPOSITORY_ABS con PID $PID"
+                exit 1
+            fi
+        else
+            # Limpiar proceso muerto
+            sed -i "/^$PID|/d" "$PID_FILE" 2>/dev/null
+        fi
+    done < "$PID_FILE"
+fi
+
+# Validar archivo de configuración
+if [[ -n "$ARCH_CONFIG" && -f "$ARCH_CONFIG" ]]; then
+    ARCH_CONFIG_ABS=$(realpath "$ARCH_CONFIG")
+else
+    echo "Error: especifique una ruta de archivo de configuraciones valido"
+    echo "Utilice -h o --help para ayuda"
+    exit 1
+fi
+
+# Validar archivo de log
+if [[ -z "$ARCH_LOG" ]]; then
+    echo "Error: especifique una ruta de archivo de log"
+    echo "Utilice -h o --help para ayuda"
+    exit 1
+fi
+
+# Crear archivo de log si no existe
+if [[ ! -f "$ARCH_LOG" ]]; then
+    if [[ "$ARCH_LOG" != *.log ]]; then
+        echo "Error: el archivo de log debe tener extensión .log"
+        echo "Utilice -h o --help para ayuda"
+        exit 1
+    fi
+    
+    mkdir -p "$(dirname "$ARCH_LOG")" 2>/dev/null
+    touch "$ARCH_LOG" 2>/dev/null || {
+        echo "Error: no se puede crear el archivo de log $ARCH_LOG"
+        exit 1
+    }
+fi
+
+ARCH_LOG_ABS=$(realpath "$ARCH_LOG")
+
+# Ejecutar según modo
+if [ "$DAEMON_MODE" = true ]; then
+    # Registrar PID
+    echo "$$|$REPOSITORY_ABS" >> "$PID_FILE"
+    
+    # Iniciar monitoreo
+    monitor_repository "$REPOSITORY_ABS" "$ARCH_CONFIG_ABS" "$ARCH_LOG_ABS"
+else
+    # Iniciar daemonización
+    daemonize "$@"
+fi
