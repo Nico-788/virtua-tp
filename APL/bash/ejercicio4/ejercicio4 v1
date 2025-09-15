@@ -1,0 +1,291 @@
+#!/bin/bash
+# Shebang: especifica el intérprete (bash) para ejecutar este script
+
+# ═══════════════════════════════════════════════════════════════
+# VARIABLES GLOBALES PARA CLEANUP
+# ═══════════════════════════════════════════════════════════════
+
+PID_FILE=""        # Ruta del archivo que contiene PIDs de demonios activos
+MONITOR_PID=""     # PID del proceso hijo que hace el monitoreo (sleep)
+DAEMON_MODE=false  # Flag que indica si estamos ejecutando en modo demonio
+
+# ═══════════════════════════════════════════════════════════════
+# FUNCIÓN DE LIMPIEZA DE RECURSOS
+# ═══════════════════════════════════════════════════════════════
+
+function cleanup() {
+    # Solo ejecutar cleanup si estamos en modo demonio
+    # (evita que el proceso padre ejecute cleanup)
+    if [ "$DAEMON_MODE" = true ]; then
+        
+        # ─── LIMPIEZA DE PROCESOS HIJO ───
+        # Verificar si hay un proceso de monitoreo activo
+        if [ -n "$MONITOR_PID" ] && kill -0 "$MONITOR_PID" 2>/dev/null; then
+            # kill -0 = verificar si proceso existe sin matarlo
+            # Si existe, enviamos SIGTERM para terminación graceful
+            kill "$MONITOR_PID" 2>/dev/null
+        fi
+        
+        # ─── LIMPIEZA DE ARCHIVOS TEMPORALES ───
+        # Verificar si el archivo PID existe y no está vacío
+        if [ -n "$PID_FILE" ] && [ -f "$PID_FILE" ]; then
+            # Remover SOLO la entrada de este demonio específico
+            # sed con delimitador | para evitar conflictos con / en rutas
+            sed -i "\|$REPOSITORY_ABS|d" "$PID_FILE" 2>/dev/null
+            
+            # Si el archivo quedó completamente vacío, eliminarlo
+            if [ ! -s "$PID_FILE" ]; then
+                rm -f "$PID_FILE"
+            fi
+        fi
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════
+# CONFIGURACIÓN DEL MANEJO DE SEÑALES
+# ═══════════════════════════════════════════════════════════════
+
+# trap: captura señales del sistema y ejecuta cleanup()
+# EXIT  = terminación normal del script
+# INT   = SIGINT (Ctrl+C)
+# TERM  = SIGTERM (kill <pid>)
+trap cleanup EXIT INT TERM
+
+# ═══════════════════════════════════════════════════════════════
+# FUNCIÓN DE DAEMONIZACIÓN VERDADERA
+# ═══════════════════════════════════════════════════════════════
+
+function daemonize() {
+    # Verificar si ya estamos ejecutando en modo demonio
+    if [ "$1" = "--daemon-mode" ]; then
+        DAEMON_MODE=true  # Activar flag de modo demonio
+        shift             # Remover el argumento --daemon-mode
+        return 0          # Continuar ejecución como demonio
+    fi
+    
+    # ─── PROCESO DE FORK ───
+    # exec: reemplaza el proceso actual por uno nuevo
+    # "$0": nombre del script actual
+    # --daemon-mode: flag para indicar al proceso hijo que es un demonio
+    # "$@": todos los argumentos originales
+    # </dev/null: stdin desde /dev/null (sin entrada)
+    # >/dev/null: stdout hacia /dev/null (sin salida)
+    # 2>&1: stderr redirigido al mismo lugar que stdout
+    # &: ejecutar en background
+    exec "$0" --daemon-mode "$@" </dev/null >/dev/null 2>&1 &
+    
+    echo "Demonio iniciado con PID $!"  # Informar PID al usuario
+    exit 0  # ¡CRÍTICO! El proceso padre DEBE morir aquí
+}
+
+# ═══════════════════════════════════════════════════════════════
+# DETECCIÓN INTELIGENTE DE RAMA PRINCIPAL
+# ═══════════════════════════════════════════════════════════════
+
+function get_main_branch() {
+    local repo="$1"  # Parámetro: ruta del repositorio
+    local branch     # Variable local para almacenar el nombre de la rama
+    
+    # ─── MÉTODO 1: Rama por defecto del remote ───
+    # symbolic-ref: obtiene la referencia simbólica
+    # refs/remotes/origin/HEAD apunta a la rama por defecto del remote
+    branch=$(git -C "$repo" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')
+    
+    # ─── MÉTODO 2: Buscar ramas comunes ───
+    if [ -z "$branch" ]; then
+        # Iterar sobre nombres típicos de rama principal
+        for common_branch in main master develop; do
+            # show-ref --verify: verificar si la referencia existe
+            # --quiet: no mostrar output, solo código de salida
+            if git -C "$repo" show-ref --verify --quiet "refs/heads/$common_branch"; then
+                branch="$common_branch"
+                break  # Salir del loop al encontrar la primera
+            fi
+        done
+    fi
+    
+    # ─── MÉTODO 3: Usar rama actual como fallback ───
+    if [ -z "$branch" ]; then
+        # rev-parse --abbrev-ref HEAD: obtener nombre de rama actual
+        branch=$(git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null)
+    fi
+    
+    echo "$branch"  # Retornar el nombre de la rama
+}
+
+# ═══════════════════════════════════════════════════════════════
+# VALIDACIÓN DE PATRONES REGEX
+# ═══════════════════════════════════════════════════════════════
+
+function validate_regex_patterns() {
+    local -n patterns_ref=$1  # Referencia al array (pass by reference)
+    local valid_patterns=()   # Array para patrones válidos
+    
+    # Iterar sobre todos los patrones regex
+    for pattern in "${patterns_ref[@]}"; do
+        # Probar el patrón con una cadena de prueba
+        # Si grep no falla, el patrón es válido
+        if echo "test" | grep -Eq "$pattern" 2>/dev/null; then
+            valid_patterns+=("$pattern")  # Agregar a válidos
+        else
+            # Mostrar warning para patrones inválidos
+            echo "Warning: patrón regex inválido ignorado: $pattern" >&2
+        fi
+    done
+    
+    # Actualizar el array original con solo patrones válidos
+    patterns_ref=("${valid_patterns[@]}")
+}
+
+# ═══════════════════════════════════════════════════════════════
+# FUNCIÓN PRINCIPAL DE MONITOREO
+# ═══════════════════════════════════════════════════════════════
+
+function monitor_repository() {
+    local repository="$1"    # Ruta del repositorio
+    local config_file="$2"   # Archivo de configuración
+    local log_file="$3"      # Archivo de log
+    
+    # Cambiar al directorio del repositorio
+    cd "$repository" || {
+        echo "Error: no se puede acceder al repositorio $repository" >&2
+        exit 1
+    }
+    
+    # ─── DETECTAR RAMA PRINCIPAL ───
+    local main_branch
+    main_branch=$(get_main_branch "$repository")
+    
+    if [ -z "$main_branch" ]; then
+        echo "Error: no se puede determinar la rama principal del repositorio" >&2
+        exit 1
+    fi
+    
+    # ─── OBTENER COMMIT INICIAL ───
+    local last_commit
+    last_commit=$(git rev-parse "$main_branch" 2>/dev/null)
+    
+    if [ -z "$last_commit" ]; then
+        echo "Error: no se puede obtener el commit de la rama $main_branch" >&2
+        exit 1
+    fi
+    
+    # ─── LEER ARCHIVO DE CONFIGURACIÓN ───
+    declare -a palabrasBuscar  # Array para palabras simples
+    declare -a patronesRegex   # Array para patrones regex
+    
+    # Leer línea por línea, incluyendo la última sin \n
+    while IFS= read -r linea || [ -n "$linea" ]; do
+        # Saltar líneas vacías y comentarios
+        [[ "$linea" =~ ^[[:space:]]*$ ]] && continue
+        [[ "$linea" =~ ^[[:space:]]*# ]] && continue
+        
+        # Distinguir entre palabras y regex
+        if [[ "$linea" == regex:* ]]; then
+            # Remover prefijo "regex:" y agregar al array de regex
+            patronesRegex+=("${linea#regex:}")
+        else
+            # Agregar como palabra simple
+            palabrasBuscar+=("$linea")
+        fi
+    done < "$config_file"
+    
+    # Validar todos los patrones regex
+    validate_regex_patterns patronesRegex
+    
+    # Log de inicio
+    echo "[$(date +"%Y-%m-%d %H:%M:%S")] Demonio iniciado - Monitoreando rama '$main_branch' en $repository" >> "$log_file"
+    
+    # ═══════════════════════════════════════════════════════════════
+    # LOOP PRINCIPAL DE MONITOREO
+    # ═══════════════════════════════════════════════════════════════
+    
+    while true; do
+        # ─── OBTENER COMMIT ACTUAL ───
+        local current_commit
+        current_commit=$(git rev-parse "$main_branch" 2>/dev/null)
+        
+        # Manejar error en comando git
+        if [ -z "$current_commit" ]; then
+            echo "[$(date +"%Y-%m-%d %H:%M:%S")] Error: no se puede obtener commit actual" >> "$log_file"
+            sleep 10  # Esperar antes de reintentar
+            continue  # Saltar al siguiente ciclo
+        fi
+        
+        # ─── DETECTAR CAMBIOS ───
+        if [ "$current_commit" != "$last_commit" ]; then
+            echo "[$(date +"%Y-%m-%d %H:%M:%S")] Cambio detectado: $last_commit -> $current_commit" >> "$log_file"
+            
+            # ─── OBTENER ARCHIVOS MODIFICADOS ───
+            local archivos_modificados
+            # mapfile: leer output de comando en array
+            mapfile -t archivos_modificados < <(git diff --name-only "$last_commit" "$current_commit" 2>/dev/null)
+            
+            # ─── PROCESAR CADA ARCHIVO ───
+            for file in "${archivos_modificados[@]}"; do
+                # Verificaciones de seguridad
+                [ ! -f "$file" ] && continue  # Saltar si no es archivo
+                [ ! -r "$file" ] && continue  # Saltar si no es legible
+                
+                # ─── BUSCAR PALABRAS CLAVE ───
+                for palabra in "${palabrasBuscar[@]}"; do
+                    # grep -q: modo silencioso (solo código de salida)
+                    if grep -q "$palabra" "$file" 2>/dev/null; then
+                        echo "[$(date +"%Y-%m-%d %H:%M:%S")] Alerta: palabra '$palabra' encontrada en $(realpath "$file")" >> "$log_file"
+                    fi
+                done
+                
+                # ─── BUSCAR PATRONES REGEX ───
+                for patron in "${patronesRegex[@]}"; do
+                    # grep -E: usar regex extendido
+                    if grep -Eq "$patron" "$file" 2>/dev/null; then
+                        echo "[$(date +"%Y-%m-%d %H:%M:%S")] Alerta: patrón '$patron' encontrado en $(realpath "$file")" >> "$log_file"
+                    fi
+                done
+            done
+            
+            # Actualizar commit de referencia
+            last_commit="$current_commit"
+        fi
+        
+        # ─── SLEEP INTERRUPTIBLE ───
+        # sleep en background para poder capturar señales
+        sleep 5 &
+        MONITOR_PID=$!  # Guardar PID del sleep
+        wait $MONITOR_PID  # Esperar que termine
+        MONITOR_PID=""  # Limpiar variable
+    done
+}
+
+# ═══════════════════════════════════════════════════════════════
+# PUNTO DE ENTRADA PRINCIPAL
+# ═══════════════════════════════════════════════════════════════
+
+# Verificar si estamos en modo demonio
+if [ "$1" = "--daemon-mode" ]; then
+    DAEMON_MODE=true  # Activar flag
+    shift             # Remover argumento
+    
+    # ─── DAEMONIZACIÓN COMPLETA ───
+    cd /        # Cambiar a directorio raíz (estándar Unix)
+    umask 0     # Resetear máscara de permisos
+    exec </dev/null >/dev/null 2>&1  # Cerrar descriptores estándar
+fi
+
+# [... resto del código de parseo y validación ...]
+
+# ═══════════════════════════════════════════════════════════════
+# LÓGICA FINAL: DEMONIO O DAEMONIZACIÓN
+# ═══════════════════════════════════════════════════════════════
+
+if [ "$DAEMON_MODE" = true ]; then
+    # ─── MODO DEMONIO: EJECUTAR MONITOREO ───
+    # Registrar PID en archivo temporal
+    echo "$$|$REPOSITORY_ABS" >> "$PID_FILE"
+    
+    # Iniciar monitoreo (esta función nunca termina)
+    monitor_repository "$REPOSITORY_ABS" "$ARCH_CONFIG_ABS" "$ARCH_LOG_ABS"
+else
+    # ─── MODO NORMAL: INICIAR DAEMONIZACIÓN ───
+    daemonize "$@"  # Hace fork y termina el proceso padre
+fi
