@@ -1,104 +1,151 @@
-Param(
-    [Parameter(Mandatory=$true, ParameterSetName="shortestRoute")]
-    [Parameter(Mandatory=$true, ParameterSetName="stationHub")]
-    [string]$matriz,
+#!/usr/bin/pwsh
+<#
+.SYNOPSIS
+    Analiza rutas en una red de transporte público a partir de una matriz de adyacencia.
 
-    [Parameter(Mandatory=$true, ParameterSetName="stationHub")]
+.DESCRIPTION
+    Este script permite:
+      - Identificar la estación "hub" (con más conexiones).
+      - Calcular el camino más corto en tiempo entre dos estaciones usando el algoritmo de Dijkstra.
+    El resultado se guarda en un archivo llamado "informe.<nombreArchivoEntrada>" en el mismo directorio.
+
+.PARAMETER matriz
+    Ruta del archivo de texto que contiene la matriz de adyacencia de la red de transporte.
+    El archivo debe contener valores numéricos, en formato cuadrado y simétrico.
+
+.PARAMETER hub
+    Opción para determinar cuál estación es el hub de la red (la que tiene más conexiones directas).
+    Obligatorio en el conjunto de parámetros HubTrue.
+
+.PARAMETER camino
+    Especifica las estaciones de inicio y fin para calcular el camino más corto.
+    Se pasan como un array de 2 enteros, por ejemplo: -camino 1,4
+    Obligatorio en el conjunto de parámetros CaminoTrue.
+
+.PARAMETER separador
+    Carácter utilizado como separador de columnas en la matriz de adyacencia.
+    Por defecto es "|".
+    Es opcional en ambos conjuntos de parámetros.
+
+.EXAMPLE
+    pwsh ./transporte.ps1 -hub -matriz mapa_transporte.txt
+    Analiza el archivo "mapa_transporte.txt" y determina el hub de la red.
+
+.EXAMPLE
+    pwsh ./transporte.ps1 -camino 1,4 -matriz mapa_transporte.txt
+    Analiza el archivo "mapa_transporte.txt" y calcula el camino más corto entre la estación 1 y 4.
+
+.NOTES
+    Autor: Tu Nombre
+    Compatible con PowerShell en Ubuntu.
+#>
+
+Param(
+    [Parameter(Mandatory=$true, ParameterSetName="HubTrue")]
     [switch]$hub,
 
-    [Parameter(Mandatory=$true, ParameterSetName="shortestRoute")]
-    [switch]$camino,
+    [Parameter(Mandatory=$true, ParameterSetName="CaminoTrue")]
+    [int[]]$camino,
 
-    [Parameter(Mandatory=$false)]
+    [Parameter(Mandatory=$true, ParameterSetName="HubTrue")]
+    [Parameter(Mandatory=$true, ParameterSetName="CaminoTrue")]
+    [string]$matriz,
+
+    [Parameter(Mandatory=$false, ParameterSetName="HubTrue")]
+    [Parameter(Mandatory=$false, ParameterSetName="CaminoTrue")]
     [string]$separador = "|"
 )
 
-# ==== Función para validar matriz ====
-function Test-Matriz {
-    param([object[][]]$mat)
+function Leer-Matriz {
+    param($ruta, $sep)
 
-    $n = $mat.Length
+    if (-not (Test-Path $ruta)) {
+        throw "El archivo $ruta no existe."
+    }
 
-    # Verificar cuadrada
+    $lineas = Get-Content $ruta
+    $mat = @()
+    foreach ($linea in $lineas) {
+        $fila = $linea -split [regex]::Escape($sep) | ForEach-Object { $_.Trim() }
+        if ($fila -contains "") {
+            throw "La matriz contiene valores vacíos."
+        }
+        $mat += ,(@($fila | ForEach-Object { [double]$_ }))
+    }
+
+    $n = $mat.Count
     foreach ($fila in $mat) {
-        if ($fila.Length -ne $n) {
+        if ($fila.Count -ne $n) {
             throw "La matriz no es cuadrada."
         }
     }
 
-    # Verificar simetría y valores numéricos
     for ($i=0; $i -lt $n; $i++) {
         for ($j=0; $j -lt $n; $j++) {
-            $out = 0.0
-            if (-not [double]::TryParse($mat[$i][$j], [ref]$out)) {
-                throw "La matriz contiene un valor no numérico en ($i,$j)."
-            }
             if ($mat[$i][$j] -ne $mat[$j][$i]) {
-                throw "La matriz no es simétrica en ($i,$j)."
+                throw "La matriz no es simétrica."
             }
         }
     }
-    return $true
+
+    return ,$mat
 }
 
-# ==== Función para encontrar el hub ====
-function Find-Hub {
-    param([object[][]]$mat)
+function Encontrar-Hub {
+    param($mat)
 
-    $n = $mat.Length
-    $maxConex = 0
-    $hub = 0
-
+    $n = $mat.Count
+    $maxConex = -1
+    $hubIndex = -1
     for ($i=0; $i -lt $n; $i++) {
         $conex = 0
         for ($j=0; $j -lt $n; $j++) {
-            if ($i -ne $j -and [double]$mat[$i][$j] -gt 0) {
+            if ($i -ne $j -and $mat[$i][$j] -gt 0) {
                 $conex++
             }
         }
         if ($conex -gt $maxConex) {
             $maxConex = $conex
-            $hub = $i + 1
+            $hubIndex = $i
         }
     }
 
-    return "Hub de la red: Estación $hub ($maxConex conexiones)"
+    return @{ Estacion = ($hubIndex+1); Conexiones = $maxConex }
 }
 
-# ==== Función Dijkstra ====
 function Dijkstra {
-    param([object[][]]$mat, [int]$origen, [int]$destino)
+    param($mat, $origen, $destino)
 
-    $n = $mat.Length
+    $n = $mat.Count
     $dist = @()
     $prev = @()
     $visitado = @()
-    for ($i=0; $i -lt $n; $i++) {
-        $dist += 999999
+    
+    for ($i = 0; $i -lt $n; $i++) {
+        $dist += [double]::PositiveInfinity
         $prev += -1
         $visitado += $false
     }
-
+    
     $dist[$origen] = 0
 
-    for ($c=0; $c -lt $n; $c++) {
-        # Buscar nodo no visitado con menor distancia
-        $min = 999999
+    for ($k=0; $k -lt $n; $k++) {
         $u = -1
+        $minDist = [double]::PositiveInfinity
+        
         for ($i=0; $i -lt $n; $i++) {
-            if (-not $visitado[$i] -and $dist[$i] -lt $min) {
-                $min = $dist[$i]
+            if (-not $visitado[$i] -and $dist[$i] -lt $minDist) {
+                $minDist = $dist[$i]
                 $u = $i
             }
         }
-
+        
         if ($u -eq -1) { break }
         $visitado[$u] = $true
 
-        # Actualizar vecinos
         for ($v=0; $v -lt $n; $v++) {
             if ($mat[$u][$v] -gt 0 -and -not $visitado[$v]) {
-                $alt = $dist[$u] + [double]$mat[$u][$v]
+                $alt = $dist[$u] + $mat[$u][$v]
                 if ($alt -lt $dist[$v]) {
                     $dist[$v] = $alt
                     $prev[$v] = $u
@@ -107,50 +154,44 @@ function Dijkstra {
         }
     }
 
-    # Reconstruir camino
+    if ($dist[$destino] -eq [double]::PositiveInfinity) {
+        return @{ Tiempo = "No hay camino disponible"; Ruta = @() }
+    }
+
     $ruta = @()
     $u = $destino
-    while ($u -ne -1) {
+    while ($u -ne -1 -and $prev[$u] -ne $null) {
         $ruta = ,($u+1) + $ruta
         $u = $prev[$u]
     }
-
-    return @{
-        Tiempo = $dist[$destino]
-        Ruta = ($ruta -join " -> ")
+    # Agregar el nodo origen al inicio
+    if ($u -eq $origen) {
+        $ruta = ,($u+1) + $ruta
     }
+
+    return @{ Tiempo = $dist[$destino]; Ruta = $ruta }
 }
 
-# ==== MAIN ====
-# Leer archivo y construir matriz
-$lineas = Get-Content $matriz
-$matrizDatos = @()
-foreach ($linea in $lineas) {
-    $fila = $linea.Split($separador)
-    $matrizDatos += ,@($fila)   # forzamos que cada fila sea un array
+# --- Ejecución principal ---
+$mat = Leer-Matriz -ruta $matriz -sep $separador
+$nombreInforme = "informe.$([System.IO.Path]::GetFileName($matriz))"
+$salida = @("## Informe de análisis de red de transporte")
+
+if ($PSCmdlet.ParameterSetName -eq "HubTrue") {
+    $hubInfo = Encontrar-Hub -mat $mat
+    $salida += "**Hub de la red:** Estación $($hubInfo.Estacion) ($($hubInfo.Conexiones) conexiones)"
+}
+elseif ($PSCmdlet.ParameterSetName -eq "CaminoTrue") {
+    if ($camino.Count -ne 2) {
+        throw "Debe especificar exactamente dos estaciones: inicio y fin."
+    }
+    $inicio = $camino[0]-1
+    $fin = $camino[1]-1
+    $res = Dijkstra -mat $mat -origen $inicio -destino $fin
+    $salida += "**Camino más corto: entre Estación $($camino[0]) y Estación $($camino[1]):**"
+    $salida += "**Tiempo total:** $($res.Tiempo) minutos"
+    $salida += "**Ruta:** " + ($res.Ruta -join " -> ")
 }
 
-# Validar
-Test-Matriz $matrizDatos | Out-Null
-
-# Salida informe
-$nombreArchivo = Split-Path $matriz -Leaf
-$directorio = Split-Path $matriz -Parent
-$salida = Join-Path $directorio "informe.$nombreArchivo"
-
-$resultado = "## Informe de análisis de red de transporte`n"
-
-if ($hub) {
-    $resultado += (Find-Hub $matrizDatos)
-}
-elseif ($camino) {
-    # Ejemplo: Estación 1 hasta Estación N
-    $res = Dijkstra $matrizDatos 0 ($matrizDatos.Length-1)
-    $resultado += "**Camino más corto: entre Estación 1 y Estación $($matrizDatos.Length):**`n"
-    $resultado += "**Tiempo total:** $($res.Tiempo) minutos`n"
-    $resultado += "**Ruta:** $($res.Ruta)`n"
-}
-
-# Guardar informe
-$resultado | Out-File -FilePath $salida -Encoding utf8
-Write-Output "Informe generado en: $salida"
+$salida | Set-Content $nombreInforme
+Write-Output "Informe generado: $nombreInforme"
