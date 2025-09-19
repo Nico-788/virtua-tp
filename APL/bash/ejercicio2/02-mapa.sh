@@ -108,6 +108,7 @@ fi
 # -----------------------------
 # LECTURA DE LA MATRIZ
 # -----------------------------
+archivo_matriz="$(realpath "$archivo_matriz")" 
 mapfile -t lineas < "$archivo_matriz"
 cantNodos=${#lineas[@]}
 declare -A matriz
@@ -136,6 +137,8 @@ for ((i=0; i<cantNodos; i++)); do
     done
 done
 
+nombre_out="informe.$(basename "$archivo_matriz")"
+
 # -----------------------------
 # LÓGICA PARA ENCONTRAR HUB
 # -----------------------------
@@ -156,7 +159,8 @@ then
             hub=$((i+1))
         fi
     done
-    echo "**Hub de la red:** Estación $hub ($max_conex conexiones)"
+    echo "**Hub de la red:** Estación $hub ($max_conex conexiones)" > "$nombre_out"
+    echo "Informe generado en: $nombre_out"
     exit 0
 fi
 
@@ -205,7 +209,6 @@ dijkstra() {
 }
 
 if [ "$camino" = true ]; then
-    nombre_out="informe.$(basename "$archivo_matriz")"
 
     dijkstra > "$nombre_out"
 

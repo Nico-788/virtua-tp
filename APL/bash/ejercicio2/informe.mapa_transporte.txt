@@ -1,3 +1,1 @@
-**Camino más corto: entre Estación 2 y Estación 4:**
-**Tiempo total:** 5 minutos
-**Ruta:** -> 2 -> 5 -> 4 -> 
+**Hub de la red:** Estación 2 (3 conexiones)
