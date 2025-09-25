@@ -1,342 +1,164 @@
 <#
+============================================
+Integrantes del grupo:
+- [Nombre 1]
+- [Nombre 2]
+- [Nombre 3]
+============================================
 .SYNOPSIS
-    Buscador de información de países utilizando una API pública con sistema de caché.
-
-.DESCRIPTION
-    Script para consultar información de países utilizando la API de REST Countries.
-    Implementa un sistema de caché individual por país para optimizar las consultas.
-    Los resultados se almacenan con un TTL (Time To Live) configurable.
-
+    Buscador de informaciÃ³n de paÃ­ses
 .PARAMETER Nombre
-    Nombre o nombres de los países a buscar, separados por comas.
-    Ejemplo: "España,Francia,Italia"
-
+    PaÃ­ses a buscar
 .PARAMETER TTL
-    Tiempo de vida del caché en segundos. Si se especifica, los resultados 
-    se guardarán en caché durante este tiempo.
-
-.EXAMPLE
-    .\05-info-paises.ps1 -Nombre "España" -TTL 300
-    Busca información de España y guarda el resultado en caché por 5 minutos.
-
-.EXAMPLE
-    .\05-info-paises.ps1 -Nombre "España,Francia,Italia"
-    Busca información de múltiples países usando caché previo si existe.
-
-.NOTES
-    API utilizada: https://restcountries.com/v3.1/name/{nombre}
-    Los archivos de caché se almacenan en el directorio temporal del script.
+    TTL en segundos
 #>
-
 param(
-    [Parameter(Mandatory=$true, HelpMessage="Nombre/s de los países a buscar")]
-    [ValidateNotNullOrEmpty()]
+    [Parameter(Mandatory=$true)]  #aca fuerzo a que me pasen data
+    [ValidateNotNullOrEmpty()] #valido que no este vacio
     [string]$Nombre,
-    
-    [Parameter(Mandatory=$false, HelpMessage="Tiempo de vida del caché en segundos")]
+    [Parameter(Mandatory=$false)]
     [ValidateScript({$_ -ge 0})]
-    [int]$TTL = 0
+    [int]$TTL = 3600
 )
 
-# Variables globales
-$BaseURL = "https://restcountries.com/v3.1/name/"
-$ScriptDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
-$CacheDirectory = Join-Path $ScriptDirectory ".tmp"
-$TTLFile = Join-Path $ScriptDirectory ".ttl_cache"
+$BaseURL = "https://restcountries.com/v3.1/name/" #URL base de la API
+$TempPath = [System.IO.Path]::GetTempPath() #Directorio temporal del sistema
+$CacheDirectory = Join-Path $TempPath "paises_cache" #Carpeta para guardar el cache de c/u pais
 
-# Función para mostrar mensajes con formato
-function Write-FormattedMessage {
-    param(
-        [string]$Message,
-        [string]$Type = "Info"
-    )
-    
-    switch ($Type) {
-        "Info" { Write-Host $Message -ForegroundColor Green }
-        "Error" { Write-Host $Message -ForegroundColor Red }
-        "Warning" { Write-Host $Message -ForegroundColor Yellow }
-        default { Write-Host $Message }
-    }
-}
+if (-not (Test-Path $CacheDirectory)) {
+    New-Item -ItemType Directory -Path $CacheDirectory -Force | Out-Null #Crear carpeta si no existe, el out-null es para que no muestre nada
+}                                                           #out-null es como un /dev/null en bash
 
-# Función para normalizar nombres de archivo
 function Get-NormalizedFilename {
     param([string]$CountryName)
-    
-    # Convierte a minúsculas, reemplaza espacios por guiones bajos, 
-    # y mantiene solo caracteres alfanuméricos y guiones bajos
-    $normalized = $CountryName.ToLower() -replace ' ', '_' -replace '[^a-z0-9_]', ''
-    return $normalized
-}
+    return $CountryName.ToLower() -replace ' ', '_' -replace '[^a-z0-9_]', '' #Normaliza el nombre del pais para usarlo como nombre de archivo
+}  #donde hay espacio pone _ y elimina caracteres especiales
 
-# Función para manejar errores de manera amigable
-function Handle-Error {
-    param(
-        [string]$ErrorMessage,
-        [string]$FriendlyMessage
-    )
-    
-    Write-FormattedMessage "Error: $FriendlyMessage" "Error"
-    Write-FormattedMessage "Detalles técnicos: $ErrorMessage" "Warning"
-    
-    # Limpiar archivos temporales si existen
-    try {
-        if (Test-Path $CacheDirectory) {
-            Get-ChildItem -Path $CacheDirectory -Filter "*.temp" | Remove-Item -Force -ErrorAction SilentlyContinue
-        }
-    }
-    catch {
-        # Ignorar errores de limpieza
-    }
-    
-    exit 1
-}
-
-# Función para gestionar el TTL
-function Initialize-TTL {
-    try {
-        if ($TTL -eq 0) {
-            # Si no se especificó TTL, intentar leer el anterior
-            if (Test-Path $TTLFile) {
-                $script:TTL = [int](Get-Content $TTLFile -ErrorAction Stop)
-                Write-FormattedMessage "Usando TTL anterior: $TTL segundos" "Info"
-            }
-        }
-        else {
-            # Validar que TTL sea un número válido
-            if ($TTL -lt 0) {
-                throw "El TTL debe ser un número positivo"
-            }
-            
-            # Guardar el nuevo TTL
-            $TTL | Out-File -FilePath $TTLFile -Encoding UTF8
-            
-            # Crear directorio de caché si no existe
-            if (-not (Test-Path $CacheDirectory)) {
-                New-Item -ItemType Directory -Path $CacheDirectory -Force | Out-Null
-                Write-FormattedMessage "Directorio de caché creado: $CacheDirectory" "Info"
-            }
-        }
-    }
-    catch {
-        Handle-Error $_.Exception.Message "Error al configurar el tiempo de vida del caché"
-    }
-}
-
-# Función para verificar si el caché es válido
-function Test-CacheValidity {
+#El try es para intentar crear el archivo y sacar el tiempo, en caso de error, devuelve false 
+function Test-CacheValidity { #aca verifica si el cache es valido, osea si existe y si no es mas viejo que el TTL
     param([string]$CacheFilePath)
-    
-    if (-not (Test-Path $CacheFilePath)) {
-        return $false
-    }
-    
-    try {
+    if (-not (Test-Path $CacheFilePath)) { return $false } #si no existe el archivo, devuelve falso
+    try {   #si existe, obtiene la info del archivo y calcula su antiguedad
         $fileInfo = Get-Item $CacheFilePath
-        $ageInSeconds = (Get-Date) - $fileInfo.LastWriteTime
-        
-        return $ageInSeconds.TotalSeconds -le $TTL
-    }
-    catch {
-        return $false
-    }
+        $age = (Get-Date) - $fileInfo.LastWriteTime
+        return $age.TotalSeconds -le $TTL  #puede fallar si esta bloqueado el archivo por otro proceso o si no tenemos los permisos
+    } catch { return $false }
 }
 
-# Función para buscar país en caché
 function Get-CountryFromCache {
     param([string]$CountryName)
+    $normalizedName = Get-NormalizedFilename $CountryName #normaliza el nombre del pais, y busca el archivo en la carpeta de cache
+    $cacheFile = Join-Path $CacheDirectory "$normalizedName.json" #Join path hace/construye la ruta completa del archivo combinando carpeta y nombre
     
-    $normalizedName = Get-NormalizedFilename $CountryName
-    $cacheFile = Join-Path $CacheDirectory "$normalizedName.cache"
-    
-    if (Test-CacheValidity $cacheFile) {
-        try {
-            $cachedData = Get-Content $cacheFile -Encoding UTF8 -ErrorAction Stop
-            
-            # Verificar que el contenido coincida con el país buscado
-            if ($cachedData -match $CountryName) {
-                Write-FormattedMessage "`nBuscando en CACHE: $CountryName`n" "Info"
-                
-                # Formatear y mostrar datos del caché
-                $parts = $cachedData -split '\|'
-                if ($parts.Count -ge 3) {
-                    Write-Host $parts[0]
-                    Write-Host $parts[1]
-                    Write-Host $parts[2]
-                    Write-Host ""
-                }
-                
-                return $true
-            }
-        }
-        catch {
-            # Si hay error leyendo el caché, eliminarlo
-            Remove-Item $cacheFile -Force -ErrorAction SilentlyContinue
-        }
-    }
-    else {
-        # Si el caché expiró, eliminarlo
-        if (Test-Path $cacheFile) {
-            Remove-Item $cacheFile -Force -ErrorAction SilentlyContinue
-        }
-    }
-    
-    return $false
-}
-
-# Función para consultar la API
-function Get-CountryFromAPI {
-    param([string]$CountryName)
-    
-    Write-FormattedMessage "`nBuscando en API: $CountryName`n" "Info"
-    
-    try {
-        # Codificar el nombre del país para URL
-        $encodedCountry = [System.Web.HttpUtility]::UrlEncode($CountryName)
-        $url = $BaseURL + $encodedCountry
-        
-        # Realizar petición HTTP
-        $response = Invoke-RestMethod -Uri $url -Method Get -ErrorAction Stop
-        
-        # Verificar que la respuesta sea válida (array)
-        if ($response -is [System.Array] -and $response.Count -gt 0) {
-            $country = $response[0]
-            
-            # Extraer información específica
-            $countryNameSpanish = if ($country.translations.spa.common) { 
-                $country.translations.spa.common 
-            } else { 
-                $country.name.common 
-            }
-            
-            $capital = if ($country.capital) { 
-                $country.capital -join ", " 
-            } else { 
-                "No disponible" 
-            }
-            
-            $region = if ($country.region) { 
-                $country.region 
-            } else { 
-                "No disponible" 
-            }
-            
-            $population = if ($country.population) { 
-                $country.population 
-            } else { 
-                "No disponible" 
-            }
-            
-            $currencies = if ($country.currencies) {
-                $currencyList = @()
-                foreach ($currencyCode in $country.currencies.PSObject.Properties.Name) {
-                    $currencyInfo = $country.currencies.$currencyCode
-                    if ($currencyInfo.name -and $currencyCode) {
-                        $currencyList += "$($currencyInfo.name) ($currencyCode)"
-                    } else {
-                        $currencyList += $currencyCode
-                    }
-                }
-                $currencyList -join ", "
-            } else { 
-                "No disponible" 
-            }
-            
-            # Formatear resultado
-            $formattedResult = "Pais: $countryNameSpanish|Capital: $capital|Region: $region|Poblacion: $population|Moneda: $currencies"
-            
-            # Guardar en caché si TTL > 0
-            if ($TTL -gt 0) {
-                try {
-                    $normalizedName = Get-NormalizedFilename $CountryName
-                    $cacheFile = Join-Path $CacheDirectory "$normalizedName.cache"
-                    $formattedResult | Out-File -FilePath $cacheFile -Encoding UTF8
-                }
-                catch {
-                    Write-FormattedMessage "Advertencia: No se pudo guardar en caché" "Warning"
-                }
-            }
-            
-            # Mostrar resultado formateado
-            $parts = $formattedResult -split '\|'
-            foreach ($part in $parts) {
-                Write-Host $part
-            }
-            Write-Host ""
-            
+    if (Test-CacheValidity $cacheFile) { #si hay archivo cache y es valido, carga los datos del archivo en varibales y los muestra
+        try { #intenta leer el archivo y convertirlo de json a objeto, carga los datos en variables y los muestra
+            Write-Host "`nObteniendo de cache: $CountryName" -ForegroundColor Green
+            $data = Get-Content $cacheFile -Raw | ConvertFrom-Json
+            Write-Host "Pais: $($data.Pais)"
+            Write-Host "Capital: $($data.Capital)"
+            Write-Host "Region: $($data.Region)"
+            Write-Host "Poblacion: $($data.Poblacion)"
+            Write-Host "Moneda: $($data.Moneda)`n"
             return $true
-        }
-        else {
-            Write-FormattedMessage "Error: No se encontró el pais '$CountryName'." "Error"
-            Write-FormattedMessage "Verifique que el nombre esté escrito correctamente o pruebe en otro idioma.`n" "Warning"
+        } catch {
+            Remove-Item $cacheFile -Force -ErrorAction SilentlyContinue #si hay un error al leer el archivo, lo borra
             return $false
         }
-    }
-    catch {
-        if ($_.Exception.Message -match "404") {
-            Write-FormattedMessage "Error: No se encontró el pais '$CountryName'." "Error"
-            Write-FormattedMessage "Verifique que el nombre esté escrito correctamente o pruebe en otro idioma.`n" "Warning"
-        }
-        else {
-            Handle-Error $_.Exception.Message "Error al consultar la API para el pais '$CountryName'"
+    } else {
+        if (Test-Path $cacheFile) { #aca pregunta si el archivo existe pero no es valido, lo borra 
+            Remove-Item $cacheFile -Force -ErrorAction SilentlyContinue
         }
         return $false
     }
 }
-
-# Función principal
-function Main {
+#esta función es la que hace la consulta a la API
+function Get-CountryFromAPI {
+    param([string]$CountryName) #recibe el nombre del pais que pasamos por parámetro
+    Write-Host "`nConsultando API: $CountryName" -ForegroundColor Cyan
     try {
-        # Verificar conectividad básica
-        if (-not (Test-NetConnection -ComputerName "restcountries.com" -Port 443 -InformationLevel Quiet)) {
-            Handle-Error "Sin conectividad" "No se puede conectar a la API. Verifique su conexion a Internet."
-        }
-        
-        # Cargar System.Web para codificación URL
-        Add-Type -AssemblyName System.Web
-        
-        # Inicializar configuración TTL
-        Initialize-TTL
-        
-        # Separar países por comas y limpiar espacios
-        $countries = $Nombre -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
-        
-        if ($countries.Count -eq 0) {
-            Handle-Error "Lista vacía" "No se especificaron paises validos para buscar"
-        }
-        
-        # Lista para países que necesitan consulta a API
-        $countriesForAPI = @()
-        
-        # Verificar caché para cada país
-        foreach ($country in $countries) {
-            if (-not (Get-CountryFromCache $country)) {
-                $countriesForAPI += $country
+        $encoded = [System.Web.HttpUtility]::UrlEncode($CountryName) #le da formato al pais para que pueda ser parte de una URL, si es español lo vuelve Espa%C3%B1ol
+        $url = $BaseURL + $encoded #genera la URL completa para hacer la petición
+        $response = Invoke-RestMethod -Uri $url -Method Get -ErrorAction Stop #Invoke hace la petición get a la URL, y si hay error, lo maneja el catch
+         #si la respuesta es un array y tiene al menos un elemento, toma el primero (   el que coincide mejor) y extrae los datos
+        if ($response -is [Array] -and $response.Count -gt 0) { #si la rta es un arreglo y tiene al menos un elemento, toma el primero
+            $country = $response[0] #Country es un vector asociativo, donde cada campo es un elemento del vector
+             #extrae los datos del pais, y si no existen, pone "N/A"    
+            $data = @{
+                Pais = $country.name.common
+                Capital = if ($country.capital) { $country.capital[0] } else { "N/A" }
+                Region = if ($country.region) { $country.region } else { "N/A" }
+                Poblacion = if ($country.population) { $country.population } else { "N/A" }
+                Moneda = if ($country.currencies) {
+                    $code = $country.currencies.PSObject.Properties.Name | Select-Object -First 1
+                    "$($country.currencies.$code.name) ($code)"
+                } else { "N/A" }
             }
-        }
-        
-        # Consultar API para países no encontrados en caché
-        foreach ($country in $countriesForAPI) {
-            Get-CountryFromAPI $country | Out-Null
-        }
-        
-        Write-FormattedMessage "Busqueda completada exitosamente." "Info"
-    }
-    catch {
-        Handle-Error $_.Exception.Message "Error inesperado durante la ejecucion del script"
-    }
-    finally {
-        # Limpiar archivos temporales
-        try {
-            if (Test-Path $CacheDirectory) {
-                Get-ChildItem -Path $CacheDirectory -Filter "*.temp" | Remove-Item -Force -ErrorAction SilentlyContinue
+            
+            if ($TTL -gt 0) { #si el TTL es mayor a 0, guarda los datos en el archivo de cache
+                $norm = Get-NormalizedFilename $CountryName
+                $cache = Join-Path $CacheDirectory "$norm.json"
+                $data | ConvertTo-Json | Out-File $cache -Encoding UTF8
             }
+            
+            Write-Host "Pais: $($data.Pais)"
+            Write-Host "Capital: $($data.Capital)"
+            Write-Host "Region: $($data.Region)"
+            Write-Host "Poblacion: $($data.Poblacion)"
+            Write-Host "Moneda: $($data.Moneda)`n"
+            return $true
+        } else {
+            Write-Host "Pais no encontrado: $CountryName" -ForegroundColor Red
+            return $false
         }
-        catch {
-            # Ignorar errores de limpieza
+    } catch {
+        Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+#esta función borra los archivos de cache que ya expiraron según  el TTL, SOLO BORRA
+function Remove-ExpiredCache {
+    if (Test-Path $CacheDirectory) {
+        Get-ChildItem $CacheDirectory -Filter "*.json" | ForEach-Object {
+            if (-not (Test-CacheValidity $_.FullName)) {
+                Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+            }
         }
     }
 }
 
-# Ejecutar función principal
-Main
+try {
+    Add-Type -AssemblyName System.Web #para usar HttpUtility, que sirve para codificar URLs
+    Remove-ExpiredCache #limpia el cache al inicio
+     #separa los paises por comas, elimina espacios y filtra los vacios
+    
+    $countries = $Nombre -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ } #esta filta por cada nombre de pais que le pasamos
+    
+    if ($countries.Count -eq 0) { #si no hay paises validos, muestra error y sale
+        Write-Host "Error: No se especificaron paises validos" -ForegroundColor Red
+        exit 1
+    }
+    
+    Write-Host "Buscando $($countries.Count) pais(es)..." -ForegroundColor Green
+    Write-Host "TTL: $TTL segundos`n" -ForegroundColor Green
+    
+    $errores = 0
+    foreach ($country in $countries) {
+        if (-not (Get-CountryFromCache $country)) { #primero intenta obtener del cache, si no puede, va a la API
+            if (-not (Get-CountryFromAPI $country)) { $errores++ }
+        }
+    }
+    
+    if ($errores -gt 0) {
+        Write-Host "Completado con $errores error(es)" -ForegroundColor Yellow
+        exit 1
+    }
+    
+    Write-Host "Busqueda completada" -ForegroundColor Green
+    exit 0
+} catch { #aca sino puede cargar System.Web o hay otro error inesperado, muestra el error y sale
+    Write-Host "Error inesperado: $($_.Exception.Message)" -ForegroundColor Red 
+    exit 1
+} finally {
+    Remove-ExpiredCache #limpia el cache al final por si se demoró mucho y algun archivo venció mientras corría el script
+}
