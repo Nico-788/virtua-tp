@@ -1,0 +1,221 @@
+#!/bin/bash
+
+# ============================================
+# Integrantes del grupo:
+# - [Nombre 1]
+# - [Nombre 2]
+# ============================================
+
+# Directorio temporal para cache (según consigna)
+CACHE_DIR="/tmp/paises_cache" #Carpeta para guardar los paises
+TTL_FILE="$CACHE_DIR/.ttl" #Archivo auxiliar para saber el tiempo de vida que tiene el CACHE_DIR
+#acá hago el directorio si no existe, redirigiendo errores a null para que no moleste
+mkdir -p "$CACHE_DIR" 2>/dev/null || true # true es para que no tire error si ya existe
+#Puede fallar en caso de que no tenga permisos de escritura en /tmp, pero es raro, en modo root lo arreglas.
+#No hay espacio en disco (o no quedan inodos): ENOSPC.
+#Nombre inválido / límite de longitud: ruta demasiado larga, o caracteres no válidos para el FS.
+
+# Limpieza automática al salir (trap requerido por consigna)
+#trap 'rm -rf "$CACHE_DIR"' EXIT ERR INT TERM #esta version sale siempre
+trap 'rm -rf "$CACHE_DIR"' ERR INT TERM #forma de limpiar recursos en caso de error o interrupcion, pero no al salir bien (Un ctrl+c, term, etc)
+
+# Función de ayuda
+function ayuda(){
+    cat << EOF
+NAME
+    05-info-paises.sh
+
+SYNOPSIS
+    ./05-info-paises.sh -n PAIS[,PAIS2,...] [-t SEGUNDOS] [-h]
+
+DESCRIPTION
+    Consulta información de países usando la API de REST Countries.
+    Implementa sistema de caché con TTL configurable.
+
+    API: https://restcountries.com/v3.1/name/{nombre}
+
+OPTIONS
+    -n, --nombre=PAIS    País o países a consultar (separados por coma)
+    -t, --ttl=SEGUNDOS   Tiempo de vida del caché (por defecto: 3600)
+    -h, --help           Muestra esta ayuda
+
+EXAMPLES
+    ./05-info-paises.sh -n Spain
+    ./05-info-paises.sh -n "Spain,France,Italy" -t 7200
+EOF
+}
+
+# Parseo de parámetros
+options=$(getopt -o n:t:h --l nombre:,ttl:,help -- "$@" 2>/dev/null)
+if [ $? -ne 0 ]; then
+    echo "Error: Parámetros incorrectos"
+    echo "Use -h o --help para ayuda"
+    exit 1
+fi
+
+eval set -- "$options"
+
+# Variables
+NOMBRES_PAISES=""
+TTL_CACHE=3600  # TTL por defecto: 1 hora
+BASE_URL="https://restcountries.com/v3.1/name/"  # ← URL CORRECTA
+
+while true; do
+    case "$1" in
+        -n|--nombre)
+            NOMBRES_PAISES="$2"
+            shift 2
+            ;;
+        -t|--ttl)
+            if ! [[ "$2" =~ ^[0-9]+$ ]]; then
+                echo "Error: TTL debe ser un número entero positivo"
+                exit 1
+            fi
+            TTL_CACHE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            ayuda
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        *)
+            echo "Error en parámetros"
+            exit 1
+            ;;
+    esac
+done
+
+# Validación de parámetros obligatorios
+if [ -z "$NOMBRES_PAISES" ]; then #Si -n no fue pasado, esta vacio el campo
+    echo "Error: Debe especificar al menos un país con -n"
+    echo "Use -h para ayuda"
+    exit 1
+fi
+
+# Crear directorio de cache
+mkdir -p "$CACHE_DIR" || { #-p es para que sino existe el directorio, lo crea y si ya existe no tira error
+    echo "Error: No se pudo crear directorio temporal" #El || es para que si falla el mkdir, tire este mensaje es un or usado como else
+    exit 1
+}
+
+# Guardar TTL
+echo "$TTL_CACHE" > "$TTL_FILE" #escribo el ttl en un archivo para no perder el ttl
+
+# Función para obtener info de un país
+function obtener_info_pais() {
+    local pais="$1" #vamos a convertir el nombre del pais a minusculas y espacios por _ para usarlo como nombre de archivo
+    local pais_normalizado=$(echo "$pais" | tr '[:upper:]' '[:lower:]' | tr ' ' '_' | tr -cd '[:alnum:]_')
+    local cache_file="$CACHE_DIR/${pais_normalizado}.json"
+    local ahora=$(date +%s) #guarda la hora actual en segundos desde epoch
+
+    # Verificar cache
+    #ahora que ya se que pais quiero, veo si esta en cache y sino voy a la api
+    if [ -f "$cache_file" ]; then #si el archivo existe
+        local cache_time=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null)
+        local edad=$((ahora - cache_time)) #calculo la edad del archivo en segundos
+
+        if [ "$edad" -le "$TTL_CACHE" ]; then #si la edad es menor o igual al ttl, uso el archivo
+            echo "Obteniendo de caché: $pais (válido por $((TTL_CACHE - edad))s más)"
+            cat "$cache_file"
+            return 0
+        else
+            echo "Caché expirado para: $pais (actualizando...)"
+            rm -f "$cache_file" #si caduco el tiempo borro el archivo
+        fi
+    fi
+
+    # Consultar API
+    echo "Consultando API para: $pais"
+
+    # Codificar URL correctamente
+    local pais_url=$(echo -n "$pais" | jq -sRr @uri) #jq maneja bien los espacios y caracteres especiales, para realizar la busqueda
+
+    # Realizar petición con timeout
+    #response guarda la respuesta de curl, osea el json
+    local response=$(curl -s --max-time 10 "${BASE_URL}${pais_url}" 2>/dev/null) #-s es para que no muestre la barra de progreso
+    local curl_status=$? #capturo el codigo de salida de curl, del ultimo comando ejecutado
+    #2>/dev/null sirve para evitar errores en pantalla
+
+    # Validar respuesta de curl
+    if [ $curl_status -ne 0 ]; then
+        echo "Error de conexión al consultar $pais (código: $curl_status)"
+        return 1
+    fi
+
+    # Validar JSON de respuesta
+    if ! echo "$response" | jq empty 2>/dev/null; then #jq empty valida si es un json valido, jq empty trata de parsear el json y si no puede, devuelve error
+        echo "Error: Respuesta inválida de la API para $pais"
+        return 1
+    fi
+
+    # Verificar si la API encontró el país
+    if echo "$response" | jq -e '.message' >/dev/null 2>&1; then #si el json tiene el campo message, es un error de pais no encontrado, en jq -e hace que devuelva 0 si encuentra el campo .message
+        echo "País no encontrado: $pais"
+        return 1
+    fi
+
+    # Extraer información según formato de consigna, en info queda el string con la info pedida, y con el formato pedido
+    local info=$(echo "$response" | jq -r ' #-r es para que no muestre comillas en strings, ni esc
+        .[] |
+        "País: \(.name.common)",
+        "Capital: \(if .capital then .capital[0] else "N/A" end)",
+        "Región: \(.region)",
+        "Población: \(.population)",
+        "Moneda: \(
+            if .currencies then
+                (.currencies | to_entries[0] | "\(.value.name) (\(.key))")
+            else
+                "N/A"
+            end
+        )"
+    ')
+
+    if [ -z "$info" ]; then #si info esta vacio, hubo un error extrayendo la info de la api
+        echo "No se pudo extraer información de: $pais"
+        return 1
+    fi
+
+    # Guardar en caché, si se obtuvo info correctamente, sino nada porque ya salio
+    echo "$info" > "$cache_file"
+
+    # Mostrar resultado
+    echo "$info"
+    echo ""
+
+    return 0
+}
+
+# Procesar países
+IFS=',' read -ra PAISES <<< "$NOMBRES_PAISES" #divido la cadena de paises en un array, usando coma como separador
+
+if [ ${#PAISES[@]} -eq 0 ]; then
+    echo "Error: No se especificaron países válidos"
+    exit 1
+fi
+
+echo "🔍 Buscando ${#PAISES[@]} país(es)..."
+echo "⏱️  TTL configurado: ${TTL_CACHE}s"
+echo ""
+
+# Buscar cada país
+errores=0
+for pais in "${PAISES[@]}"; do
+    # Limpiar espacios
+    pais=$(echo "$pais" | xargs)
+
+    if [ -n "$pais" ]; then
+        obtener_info_pais "$pais" || ((errores++))
+    fi
+done
+
+# Resultado final
+if [ $errores -gt 0 ]; then
+    echo "Se completó con $errores error(es)"
+    exit 1
+fi
+
+echo "Búsqueda completada exitosamente"
