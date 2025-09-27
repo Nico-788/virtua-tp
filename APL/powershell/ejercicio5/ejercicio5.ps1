@@ -1,3 +1,31 @@
+<#
+.SYNOPSIS
+    Script para consultar información de países con caché.
+
+.DESCRIPTION
+    Este script consulta información de uno o varios países usando la API pública 
+    de RestCountries. Los resultados se almacenan en un archivo de caché (JSON) 
+    para evitar múltiples llamadas a la API. El tiempo de vida del caché se define 
+    mediante el parámetro TTL (time-to-live).
+
+.EXAMPLE
+    .\ejercicio5.ps1 -nombre "Argentina","Chile" -ttl 60
+    Consulta la información de Argentina y Chile, manteniendo los datos en caché 
+    durante 60 segundos.
+
+.INPUTS
+    -nombre: Nombre o lista de nombres de países a consultar.
+    -ttl:    Tiempo en segundos para considerar válido el caché.
+
+.OUTPUTS
+    Muestra en consola los datos básicos de cada país:
+    - Nombre
+    - Capital
+    - Región
+    - Población
+    - Moneda
+#>
+
 param(
     [Parameter(Mandatory = $true)]
     [string[]] $nombre,   # uno o más países
@@ -65,3 +93,4 @@ foreach ($country in $nombre) {
 
 # Guardar caché actualizado
 $cache | ConvertTo-Json -Depth 5 | Set-Content $cacheFile
+
