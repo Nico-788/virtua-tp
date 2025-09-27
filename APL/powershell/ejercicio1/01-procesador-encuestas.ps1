@@ -1,36 +1,24 @@
+<#
+.SYNOPSIS
+    Script de procesador de encuestas
+.DESCRIPTION
+    Procesa archivos .txt con encuestas en formato:
+    ID_ENCUESTA|FECHA|CANAL|TIEMPO_RESPUESTA|NOTA_SATISFACCION
+.EXAMPLE
+    .\01-procesador-encuestas.ps1 -Directorio C:\encuestas -Pantalla
+.INPUTS
+    -Directorio: Ruta del directorio con los .txt
+    -Archivo: Ruta completa del archivo JSON de salida (No usar con -Pantalla)
+    -Pantalla: Muestra salida por pantalla (No usar con -Archivo)
+.OUTPUTS
+    El resultado por pantalla o un archivo JSON de salida
+#>
 param(
+    [Parameter(Mandatory = $true)]
     [string]$Directorio,
     [string]$Archivo = $null,
-    [switch]$Pantalla,
-    [switch]$Help
+    [switch]$Pantalla
 )
-
-function Mostrar-Ayuda {
-    Write-Host "NAME"
-    Write-Host "`t01-procesador-encuestas"
-    Write-Host "`nSYNOPSIS"
-    Write-Host "`t .\01-procesador-encuestas.ps1 -Directorio <DIR> [-Archivo <FILE>] [-Pantalla]"
-    Write-Host "`nDESCRIPTION"
-    Write-Host "`tProcesa archivos .txt con encuestas en formato:"
-    Write-Host "`tID_ENCUESTA|FECHA|CANAL|TIEMPO_RESPUESTA|NOTA_SATISFACCION"
-    Write-Host "`nOPTIONS"
-    Write-Host "`t-Directorio   Ruta del directorio con los .txt"
-    Write-Host "`t-Archivo      Ruta completa del archivo JSON de salida (no usar con -Pantalla)"
-    Write-Host "`t-Pantalla     Muestra salida por pantalla (no usar con -Archivo)"
-    Write-Host "`t-Help         Muestra esta ayuda"
-}
-
-# Si piden ayuda, la mostramos y salimos
-if ($Help) {
-    Mostrar-Ayuda
-    exit
-}
-
-# Validamos el directorio solo si no es ayuda
-if (-not $Directorio) {
-    Write-Error "Error: Debe indicar el parámetro -Directorio"
-    exit 1
-}
 
 if (-not (Test-Path $Directorio -PathType Container)) {
     Write-Error "Error: El directorio '$Directorio' no existe o no es un directorio."
