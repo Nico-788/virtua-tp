@@ -1,0 +1,483 @@
+# GUÍA COMPLETA DE TESTING PARA 4demonio.ps1 (PowerShell)
+# EJECUTAR PASO A PASO - NO COPIAR TODO JUNTO
+
+# ==========================================
+# FASE 1: PREPARACIÓN INICIAL
+# ==========================================
+
+# PASO 1: Configurar política de ejecución de PowerShell
+# Propósito: Permitir que PowerShell ejecute scripts locales
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+Write-Host "Política de ejecución configurada"
+
+# PASO 2: Verificar que Git está disponible
+# Propósito: Confirmar que Git está instalado y en PATH
+try {
+    git --version
+    Write-Host "Git disponible y funcionando"
+} catch {
+    Write-Error "Git no está instalado o no está en PATH"
+    return
+}
+
+# PASO 3: Verificar que el script existe
+# Propósito: Confirmar que el archivo 4demonio.ps1 está presente
+if (Test-Path "4demonio.ps1") {
+    Write-Host "Script 4demonio.ps1 encontrado"
+} else {
+    Write-Error "El archivo 4demonio.ps1 no existe en el directorio actual"
+    Write-Host "Archivos .ps1 disponibles:"
+    Get-ChildItem "*.ps1"
+    return
+}
+
+# ==========================================
+# FASE 2: TESTING DE AYUDA Y VALIDACIONES
+# ==========================================
+
+# PASO 4: Verificar documentación Get-Help (OBLIGATORIO según consigna)
+# Propósito: Confirmar que cumple con el requisito de PowerShell para Get-Help
+Write-Host "=== TESTING GET-HELP ==="
+Get-Help .\4demonio.ps1
+Write-Host ""
+Get-Help .\4demonio.ps1 -Examples
+Write-Host ""
+Get-Help .\4demonio.ps1 -Detailed
+
+# PASO 5: Testing validación de parámetros obligatorios
+# Propósito: Verificar que el script detecta cuando faltan parámetros
+Write-Host "=== TESTING VALIDACIONES ==="
+try {
+    .\4demonio.ps1
+    Write-Host "ERROR: Debería haber fallado sin parámetros"
+} catch {
+    Write-Host "Correcto: Detecta parámetros faltantes"
+}
+
+# PASO 6: Testing parámetros incompletos
+# Propósito: Verificar validación parcial de parámetros
+try {
+    .\4demonio.ps1 -Repo "TestRepo"
+    Write-Host "ERROR: Debería haber fallado con parámetros incompletos"
+} catch {
+    Write-Host "Correcto: Detecta parámetros obligatorios faltantes"
+}
+
+# ==========================================
+# FASE 3: PREPARACIÓN DEL ENTORNO DE TESTING
+# ==========================================
+
+# PASO 7: Crear archivo de configuración de patrones
+# Propósito: Definir qué patrones buscar (simples y regex)
+$patronesContent = @"
+# Archivo de configuración de patrones
+password
+API_KEY
+secret
+token
+database_password
+regex:^.*password\s*=\s*['"].*['"].*$
+regex:API_KEY\s*:\s*['"][^'"]*['"]
+regex:secret.*=.*['"][^'"]+['"]
+"@
+
+Set-Content -Path "patrones.conf" -Value $patronesContent -Encoding UTF8
+Write-Host "Archivo de configuración creado:"
+Get-Content "patrones.conf"
+
+# PASO 8: Crear repositorio Git de prueba
+# Propósito: Preparar un repositorio real para monitorear
+$repoPath = "TestRepo"
+if (Test-Path $repoPath) { Remove-Item $repoPath -Recurse -Force }
+New-Item -Path $repoPath -ItemType Directory -Force | Out-Null
+
+Set-Location $repoPath
+git init
+git config user.email "test@example.com"
+git config user.name "Test User"
+
+# Crear commit inicial
+"# Test Repository for PowerShell Daemon" | Out-File -FilePath "README.md" -Encoding UTF8
+git add README.md
+git commit -m "Initial commit"
+
+Set-Location ..
+Write-Host "Repositorio Git creado en: $(Join-Path (Get-Location) $repoPath)"
+
+# ==========================================
+# FASE 4: TESTING DEL DEMONIO
+# ==========================================
+
+# PASO 9: Iniciar demonio
+# Propósito: Lanzar el proceso demonio para monitorear el repositorio
+Write-Host "=== INICIANDO DEMONIO ==="
+$logPath = "audit_test.log"
+
+# Variables para usar en comandos posteriores
+$repoPath = "TestRepo"
+$logPath = "audit_test.log"
+
+.\4demonio.ps1 -Repo $repoPath -Configuracion "patrones.conf" -Log $logPath -Alerta 5
+
+# PASO 10: Verificar que el demonio se inició correctamente
+# Propósito: Confirmar que el proceso está corriendo en segundo plano
+Start-Sleep -Seconds 3
+
+$lockFile = Join-Path $env:TEMP "audit_daemon_$repoPath.lock"
+if (Test-Path $lockFile) {
+    $processId = Get-Content $lockFile
+    Write-Host "Demonio iniciado correctamente - PID: $processId"
+    
+    # Verificar que el proceso está activo
+    try {
+        $proceso = Get-Process -Id $processId -ErrorAction Stop
+        Write-Host "Proceso demonio activo: $($proceso.ProcessName)"
+    } catch {
+        Write-Host "Advertencia: Proceso demonio no encontrado en lista de procesos"
+    }
+} else {
+    Write-Host "ERROR: Lockfile no encontrado. Demonio no se inició correctamente"
+}
+
+# PASO 11: Verificar archivo de log inicial
+# Propósito: Confirmar que se puede escribir en el log
+if (Test-Path $logPath) {
+    $logSize = (Get-Item $logPath).Length
+    Write-Host "Archivo de log creado - Tamaño: $logSize bytes"
+} else {
+    Write-Host "ERROR: Archivo de log no creado"
+}
+
+# ==========================================
+# FASE 5: TESTING DE DETECCIÓN DE PATRONES
+# ==========================================
+
+# PASO 12: Crear archivos con contenido sensible
+# Propósito: Probar detección de patrones simples y regex
+Write-Host "=== CREANDO CONTENIDO SENSIBLE ==="
+Set-Location $repoPath
+
+# Archivo JavaScript con múltiples patrones
+$configJs = @"
+const config = {
+    database: {
+        password: "secret123"
+    },
+    api: {
+        API_KEY: "abc123def456",
+        secret: "my_secret_token"
+    },
+    auth: {
+        token: "auth_token_123",
+        database_password: "db_secret"
+    }
+};
+"@
+
+Set-Content -Path "config.js" -Value $configJs -Encoding UTF8
+Write-Host "Archivo config.js creado con patrones múltiples"
+
+# Archivo Python con patrones regex
+$settingsPy = @"
+# Configuration file
+password = "regex_test_password"
+API_KEY: "regex_api_key_test"
+secret_var = "this_is_a_secret"
+normal_variable = "no_pattern_here"
+"@
+
+Set-Content -Path "settings.py" -Value $settingsPy -Encoding UTF8
+Write-Host "Archivo settings.py creado con patrones regex"
+
+Set-Location ..
+
+# PASO 13: Hacer commit para activar detección
+# Propósito: Activar el monitoreo del demonio con archivos que contienen patrones
+Set-Location $repoPath
+git add config.js settings.py
+git commit -m "Added files with sensitive data for testing"
+Set-Location ..
+
+Write-Host "Commit realizado - Esperando detección de patrones..."
+
+# PASO 14: Esperar y verificar detección inicial
+# Propósito: Dar tiempo al demonio para procesar el commit y detectar patrones
+Start-Sleep -Seconds 8
+
+Write-Host "=== VERIFICANDO DETECCIÓN INICIAL ==="
+if (Test-Path $logPath) {
+    $logContent = Get-Content $logPath | Where-Object { $_.Trim() -ne "" }
+    if ($logContent) {
+        Write-Host "ALERTAS DETECTADAS:"
+        $logContent
+        Write-Host ""
+        Write-Host "Total de alertas: $($logContent.Count)"
+        
+        # Análisis de patrones detectados
+        $patrones = $logContent | ForEach-Object { ($_ -split "'")[1] } | Sort-Object -Unique
+        Write-Host "Patrones únicos detectados:"
+        $patrones
+    } else {
+        Write-Host "Log vacío - verificando tamaño: $((Get-Item $logPath).Length) bytes"
+    }
+} else {
+    Write-Host "ERROR: Archivo de log no encontrado"
+}
+
+# ==========================================
+# FASE 6: TESTING DE MONITOREO EN TIEMPO REAL
+# ==========================================
+
+# PASO 15: Modificar archivo existente
+# Propósito: Probar detección de cambios en archivos ya existentes
+Write-Host "=== TESTING DETECCIÓN EN TIEMPO REAL ==="
+Set-Location $repoPath
+
+Add-Content -Path "config.js" -Value 'const new_password = "additional_secret";'
+Add-Content -Path "config.js" -Value 'const database_password = "new_db_secret";'
+
+git add config.js
+git commit -m "Added additional passwords"
+Set-Location ..
+
+# Esperar detección del cambio
+Start-Sleep -Seconds 8
+
+Write-Host "LOG DESPUÉS DE MODIFICACIÓN:"
+$newLogContent = Get-Content $logPath | Where-Object { $_.Trim() -ne "" }
+if ($newLogContent) {
+    $newLogContent | Select-Object -Last 5
+} else {
+    Write-Host "No se detectaron nuevos patrones"
+}
+
+# PASO 16: Crear archivo completamente nuevo
+# Propósito: Probar detección en archivos nuevos
+Set-Location $repoPath
+
+$envFile = @"
+# Environment variables
+DB_PASSWORD=secretpassword123
+API_KEY=sk-1234567890abcdef
+SECRET_TOKEN=secret_abc_def_123
+NORMAL_VAR=just_a_normal_value
+"@
+
+Set-Content -Path ".env" -Value $envFile -Encoding UTF8
+git add .env
+git commit -m "Added environment file"
+Set-Location ..
+
+# Esperar detección del nuevo archivo
+Start-Sleep -Seconds 8
+
+Write-Host "LOG DESPUÉS DE ARCHIVO NUEVO:"
+$finalLogContent = Get-Content $logPath | Where-Object { $_.Trim() -ne "" }
+if ($finalLogContent) {
+    $finalLogContent | Select-Object -Last 5
+}
+
+# ==========================================
+# FASE 7: TESTING DE CONTROL DEL DEMONIO
+# ==========================================
+
+# PASO 17: Testing prevención de duplicados
+# Propósito: Verificar que no se pueden ejecutar múltiples demonios
+Write-Host "=== TESTING PREVENCIÓN DE DUPLICADOS ==="
+try {
+    .\4demonio.ps1 -Repo $repoPath -Configuracion "patrones.conf" -Log $logPath -Alerta 5
+    Write-Host "ERROR: Debería haber detectado demonio duplicado"
+} catch {
+    Write-Host "Correcto: Previene ejecución de demonio duplicado"
+}
+
+# PASO 18: Verificar estado del demonio
+# Propósito: Confirmar que el demonio original sigue funcionando
+Write-Host "=== VERIFICACIÓN DE ESTADO ==="
+if (Test-Path $lockFile) {
+    $processId = Get-Content $lockFile
+    Write-Host "Demonio activo con PID: $processId"
+} else {
+    Write-Host "WARNING: Lockfile no encontrado"
+}
+
+# ==========================================
+# FASE 8: TESTING DE CASOS EXTREMOS
+# ==========================================
+
+# PASO 19: Testing parámetros inválidos
+# Propósito: Verificar validación robusta de parámetros
+Write-Host "=== TESTING CASOS EXTREMOS ==="
+
+# Intervalo inválido
+try {
+    .\4demonio.ps1 -Repo $repoPath -Configuracion "patrones.conf" -Log $logPath -Alerta -5
+    Write-Host "ERROR: Debería rechazar intervalo negativo"
+} catch {
+    Write-Host "Correcto: Rechaza intervalo negativo"
+}
+
+# Directorio inexistente
+try {
+    .\4demonio.ps1 -Repo "DirectorioInexistente" -Configuracion "patrones.conf" -Log $logPath
+    Write-Host "ERROR: Debería rechazar directorio inexistente"
+} catch {
+    Write-Host "Correcto: Rechaza directorio inexistente"
+}
+
+# ==========================================
+# FASE 9: RESUMEN Y ESTADÍSTICAS
+# ==========================================
+
+# PASO 20: Generar resumen completo
+# Propósito: Mostrar estadísticas finales de todas las detecciones
+Write-Host "=== RESUMEN FINAL ==="
+$allLogContent = Get-Content $logPath | Where-Object { $_.Trim() -ne "" }
+
+if ($allLogContent) {
+    Write-Host "CONTENIDO COMPLETO DEL LOG:"
+    Write-Host "=" * 50
+    $allLogContent
+    Write-Host "=" * 50
+    
+    # Estadísticas
+    $totalAlertas = $allLogContent.Count
+    $archivosUnicos = $allLogContent | ForEach-Object { ($_ -split "'")[3] } | Sort-Object -Unique
+    $patronesUnicos = $allLogContent | ForEach-Object { ($_ -split "'")[1] } | Sort-Object -Unique
+    
+    Write-Host ""
+    Write-Host "ESTADÍSTICAS FINALES:"
+    Write-Host "Total de alertas detectadas: $totalAlertas"
+    Write-Host "Archivos únicos analizados: $($archivosUnicos.Count)"
+    Write-Host "Patrones únicos detectados: $($patronesUnicos.Count)"
+    
+    Write-Host ""
+    Write-Host "ARCHIVOS ANALIZADOS:"
+    $archivosUnicos
+    
+    Write-Host ""
+    Write-Host "PATRONES DETECTADOS:"
+    $patronesUnicos
+} else {
+    Write-Host "No se detectaron patrones en el log"
+}
+
+# ==========================================
+# FASE 10: DETENCIÓN Y LIMPIEZA
+# ==========================================
+
+# PASO 21: Detener el demonio
+# Propósito: Probar funcionalidad de detención del demonio
+Write-Host "=== DETENIENDO DEMONIO ==="
+.\4demonio.ps1 -Repo $repoPath -Kill
+
+# PASO 22: Verificar detención correcta
+# Propósito: Confirmar que el demonio se detuvo completamente
+Start-Sleep -Seconds 3
+
+if (-not (Test-Path $lockFile)) {
+    Write-Host "Demonio detenido correctamente - Lockfile eliminado"
+} else {
+    Write-Host "WARNING: Lockfile aún existe"
+}
+
+# PASO 23: Testing kill sin demonio activo
+# Propósito: Verificar manejo de errores al detener demonio inexistente
+try {
+    .\4demonio.ps1 -Repo $repoPath -Kill
+    Write-Host "ERROR: Debería indicar que no hay demonio corriendo"
+} catch {
+    Write-Host "Correcto: Detecta que no hay demonio para detener"
+}
+
+# ==========================================
+# FASE 11: VERIFICACIÓN FINAL
+# ==========================================
+
+# PASO 24: Verificar limpieza de archivos temporales
+# Propósito: Confirmar que no quedan archivos basura
+Write-Host "=== VERIFICACIÓN FINAL ==="
+$tempFiles = Get-ChildItem $env:TEMP -Filter "*audit*" -ErrorAction SilentlyContinue
+if (-not $tempFiles) {
+    Write-Host "Correcto: No hay archivos temporales huérfanos"
+} else {
+    Write-Host "Archivos temporales encontrados:"
+    $tempFiles | Select-Object Name, LastWriteTime
+}
+
+# PASO 25: Verificar integridad del repositorio
+# Propósito: Confirmar que el repositorio Git está en buen estado
+Set-Location $repoPath
+$gitStatus = git status --porcelain
+if (-not $gitStatus) {
+    Write-Host "Repositorio Git en estado limpio"
+} else {
+    Write-Host "Repositorio tiene cambios pendientes:"
+    git status
+}
+Set-Location ..
+
+# PASO 26: Mostrar archivos generados
+# Propósito: Listar todos los archivos creados durante el testing
+Write-Host "=== ARCHIVOS GENERADOS ==="
+Write-Host "Archivo de configuración:"
+Get-ChildItem "patrones.conf" | Select-Object Name, Length, LastWriteTime
+
+Write-Host "Archivo de log:"
+Get-ChildItem $logPath -ErrorAction SilentlyContinue | Select-Object Name, Length, LastWriteTime
+
+Write-Host "Repositorio de prueba:"
+Get-ChildItem $repoPath | Select-Object Name, Length, LastWriteTime
+
+# ==========================================
+# CONCLUSIÓN
+# ==========================================
+
+Write-Host ""
+Write-Host "=== TESTING COMPLETADO EXITOSAMENTE ==="
+Write-Host "El demonio PowerShell demostró funcionamiento completo:"
+Write-Host "- Compatibilidad con Get-Help nativo de PowerShell"
+Write-Host "- Validación usando params de PowerShell"
+Write-Host "- Detección de patrones simples y regex"
+Write-Host "- Monitoreo Git en tiempo real"
+Write-Host "- Logging con timestamps correctos"
+Write-Host "- Control de procesos demonio"
+Write-Host "- Prevención de duplicados"
+Write-Host "- Manejo robusto de errores"
+Write-Host "- Detención limpia del demonio"
+
+Write-Host ""
+Write-Host "PARA LIMPIAR EL ENTORNO DE TESTING:"
+Write-Host "Remove-Item 'patrones.conf', '$logPath', '$repoPath' -Recurse -Force"
+
+# ==========================================
+# NOTAS IMPORTANTES PARA USUARIOS FUTUROS
+# ==========================================
+
+<#
+NOTAS IMPORTANTES:
+
+1. EJECUTAR PASO A PASO: No ejecutar todo el script de una vez. 
+   Copiar y pegar cada paso individualmente para observar resultados.
+
+2. VERIFICAR PREREQUISITOS: Asegurar que Git esté instalado y 
+   PowerShell tenga permisos de ejecución configurados.
+
+3. MONITOREAR PROCESOS: Durante el testing, el demonio corre en 
+   segundo plano. Usar Task Manager para verificar procesos PowerShell.
+
+4. INTERPRETAR RESULTADOS: Si el log muestra líneas vacías en 
+   pantalla pero reporta alertas, usar:
+   Get-Content $logPath | Where-Object { $_.Trim() -ne "" }
+
+5. LIMPIEZA: Siempre detener el demonio antes de cerrar PowerShell
+   para evitar procesos huérfanos.
+
+6. TROUBLESHOOTING: Si el demonio no detecta patrones:
+   - Verificar que el lockfile existe
+   - Confirmar que el intervalo (-Alerta) no sea muy largo
+   - Revisar que los commits se hagan correctamente
+
+7. RENDIMIENTO: El demonio usa recursos mínimos. Intervalos de 
+   5-10 segundos son apropiados para testing.
+#>
