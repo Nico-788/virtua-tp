@@ -34,34 +34,46 @@ param(
     [int] $ttl            # tiempo en segundos para mantener el cache
 )
 
-# Archivo de caché
-$cacheFile = "cache.json"
-
-# Si no existe, lo inicializamos
-if (-not (Test-Path $cacheFile)) {
-    @{} | ConvertTo-Json | Set-Content $cacheFile
+# Validar TTL
+if ($ttl -le 0) {
+    Write-Error "El parámetro -ttl debe ser un número mayor a 0."
+    exit 1
 }
 
-# Cargar caché como objeto hashtable
-$cache = Get-Content $cacheFile | ConvertFrom-Json -AsHashtable
+# Archivo de caché en carpeta temporal
+$cacheFile = Join-Path -Path $env:TEMP -ChildPath "ejercicio5_cache.json"
+
+# Inicializar caché
+try {
+    if (-not (Test-Path $cacheFile)) {
+        @{} | ConvertTo-Json | Set-Content $cacheFile -ErrorAction Stop
+    }
+    $cache = Get-Content $cacheFile | ConvertFrom-Json -AsHashtable
+}
+catch {
+    Write-Error "Error al cargar o inicializar el caché: $_"
+    exit 1
+}
 
 foreach ($country in $nombre) {
     $countryKey = $country.ToLower()
-
     $useCache = $false
+    $data = $null
+
     if ($cache.ContainsKey($countryKey)) {
         $entry = $cache[$countryKey]
         $lastUpdate = Get-Date $entry.lastUpdate
         if ((New-TimeSpan -Start $lastUpdate -End (Get-Date)).TotalSeconds -lt $ttl) {
             $useCache = $true
             $data = $entry.data
+            Write-Host "[CACHE] Usando datos guardados para $country"
         }
     }
 
     if (-not $useCache) {
         try {
             $url = "https://restcountries.com/v3.1/name/$country"
-            $response = Invoke-RestMethod -Uri $url -Method Get
+            $response = Invoke-RestMethod -Uri $url -Method Get -ErrorAction Stop
 
             if ($null -ne $response) {
                 # Tomamos el primer resultado
@@ -78,19 +90,32 @@ foreach ($country in $nombre) {
                     lastUpdate = (Get-Date).ToString("o")
                     data       = $data
                 }
+
+                Write-Host "[API] Datos actualizados desde la API para $country"
             }
         }
         catch {
-            Write-Host "Error al consultar API para ${country} : $_"
+            Write-Error "Error al consultar API para ${country} : $_"
             continue
         }
     }
 
+    $resText = "    País: {0}
+    Capital: {1}
+    Región: {2}
+    Población: {3}
+    Moneda: {4}
+    "
+
     # Mostrar resultados
-    Write-Output ("País: {0} Capital: {1} Región: {2} Población: {3} Moneda: {4}" -f `
+    Write-Output ($resText -f `
         $data.Name, $data.Capital, $data.Region, $data.Population, $data.Currency)
-}
+}   
 
 # Guardar caché actualizado
-$cache | ConvertTo-Json -Depth 5 | Set-Content $cacheFile
-
+try {
+    $cache | ConvertTo-Json -Depth 5 | Set-Content $cacheFile -ErrorAction Stop
+}
+catch {
+    Write-Error "Error al guardar el archivo de caché: $_"
+}
