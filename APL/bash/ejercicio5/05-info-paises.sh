@@ -9,23 +9,20 @@ function ayuda(){
     echo -e "\tMuestra la informacion de los paises solicitados extrayendolos de una API"
     echo -e "\n\e[1m\tAPI: https://restcountries.com/v3.1/translation/{nombre}\e[0m"
     echo -e "\n\tMas infomacion en: https://restcountries.com/"
-    echo -e "\n\tPara agilizar las consultas, se utiliza un archivo cache que se crea al especificar -t o --tll."
-    echo -e "\tUna vez consultados los paises se almacenan en el archivo <dir_script>/.tmp/paises.cache. Una vez excedido el"
-    echo -e "\ttiempo de vida, se elimina."
-    echo -e "\tEl tiempo de vida especificado mayor a 0 se almacena en el archivo <dir_script>/.ttl_cache."
+    echo -e "\n\tPara agilizar las consultas, se utiliza un archivo cache opcional con TTL."
+    echo -e "\tCada linea de cache contiene: info|timestamp."
+    echo -e "\tCuando el TTL expire, la linea se elimina automaticamente."
     echo -e "\n\tLos argumentos obligatorios para las opciones largas también son obligatorios para las opciones cortas."
     echo -e "\n\t\e[1m-n, --nombre=PAIS\e[0m"
     echo -e "\t\tpais o paises a consultar. Entre paises se precisa la separacion por ',' sin espacios"
     echo -e "\n\t\e[1m-t, --ttl=TimeToLeave\e[0m"
-    echo -e "\t\ttiempo de vida del archivo cache. Al usarse se crea un archivo cache con el tiempo de vida asignado."
-    echo -e "\t\tCuando se asigna otro tiempo de vida sin haber terminado el anterior, se reemplaza el anterior por el nuevo."
+    echo -e "\t\topcional. Tiempo de vida de cache por pais en segundos. Si no se especifica, no se guarda en cache."
     echo -e "\n\t\e[1m-h, --help\e[0m"
     echo -e "\t\tayuda para el uso del comandos"
 }
 
 options=$(getopt -o n:t:h --l nombre:,ttl:,help -- "$@" 2> /dev/null)
-if [ "$?" != "0" ]
-then
+if [ "$?" != "0" ]; then
     echo 'Opciones incorrectas.'
     echo "Utilice -h o --help para ayuda"
     exit 1
@@ -38,8 +35,7 @@ NOMBRES_PAISES=""
 TTL_CACHE=0
 BASE_URL="https://restcountries.com/v3.1/translation/"
 
-while true
-do
+while true; do
     case "$1" in
         -n | --nombre)
             NOMBRES_PAISES="$2"
@@ -57,7 +53,7 @@ do
             break
             ;;
         *)
-            echo Error en parametros
+            echo "Error en parametros"
             echo "Utilice -h o --help para ayuda"
             exit 1
             ;;
@@ -76,63 +72,71 @@ if [ -z "$NOMBRES_PAISES" ]; then
 fi
 
 DIRECTORY_SCRIPT="$(dirname "$(realpath "$0")")"
+mkdir -p "$DIRECTORY_SCRIPT"/.tmp
 CACHE_FILE="$DIRECTORY_SCRIPT"/.tmp/paises.cache
-TTL_CACHE_FILE="$DIRECTORY_SCRIPT"/.ttl_cache
-
-if [ $TTL_CACHE -eq 0 ]; then
-    if [ -f "$CACHE_FILE" ]; then
-        TTL_CACHE=$(cat "$TTL_CACHE_FILE")
-    fi
-else
-    if [[ $TTL_CACHE =~ ^[0-9]+\.?[0-9]*$ ]]; then
-        echo "$TTL_CACHE" > "$TTL_CACHE_FILE"
-        mkdir -p "$DIRECTORY_SCRIPT"/.tmp
-    else
-        echo "Error: numero de ttl invalido"
-        echo "Utilice -h o --help para ayuda"
-        exit 1
-    fi
-fi
 
 IFS=',' read -ra paisesABuscar <<< "$NOMBRES_PAISES"
 
-if [ -f "$CACHE_FILE" ]; then
-    if (( $(date +%s) - $(stat -c %Y "$CACHE_FILE") <= "$TTL_CACHE" )); then
-        while IFS= read -r infoPais; do
-            for i in "${!paisesABuscar[@]}"; do
-                currentPais="${paisesABuscar[i]}"
+# Función para limpiar cache vencida (solo si TTL > 0)
+function limpiar_cache() {
+    if [ "$TTL_CACHE" -le 0 ]; then return; fi
+    if [ -f "$CACHE_FILE" ]; then
+        tmpfile=$(mktemp)
+        now=$(date +%s)
+        while IFS= read -r linea; do
+            timestamp="$(echo "$linea" | awk -F'|' '{print $4}')"
+            if [[ "$timestamp" =~ ^[0-9]+$ ]] && (( now - timestamp <= TTL_CACHE )); then
+                echo "$linea" >> "$tmpfile"
+            fi
+        done < "$CACHE_FILE"
+        mv "$tmpfile" "$CACHE_FILE"
+    fi
+}
 
-                if echo "$infoPais" | grep -qi "$currentPais"; then
+limpiar_cache
+
+# Buscar en cache primero (TTL opcional)
+if [ -f "$CACHE_FILE" ]; then
+    tmpPaises=("${paisesABuscar[@]}")
+    while IFS= read -r linea; do
+        info="${linea%|*}"
+        for i in "${!tmpPaises[@]}"; do
+            currentPais="${tmpPaises[i]}"
+            if echo "$info" | grep -qi "$currentPais"; then
+                echo "$info"
+                ttl_arch="$(echo "$info" | awk -F'|' '{print $4}')"
+                echo "$ttl_arch"
+                result_ttl=$(( $(date +%s) - ttl_arch ))
+                echo "$result_ttl"
+                if [ "$result_ttl" -lt 0 ]; then
                     echo -e "\nBuscando en CACHE: $currentPais\n"
-                    echo "$infoPais" | awk -F'|' '{printf "%s\n%s\n%s\n", $1, $2, $3}'
+                    echo "$info" | awk -F'|' '{printf "%s\n%s\n%s\n", $1, $2, $3}'
                     unset 'paisesABuscar[i]'
                 fi
-            done
-        done < "$CACHE_FILE"
-    else
-        rm -r "$DIRECTORY_SCRIPT"/.tmp
-        rm "$TTL_CACHE_FILE"
-        TTL_CACHE=0
-    fi
+            fi
+        done
+    done < "$CACHE_FILE"
 fi
 
+# Buscar en API los paises restantes
 for pais in "${paisesABuscar[@]}"; do
     echo -e "\nBuscando en API: $pais\n"
-    pais=$(echo -n "$pais" | jq -sRr @uri) #normalizo $pais ya que puede tener caracteres especiales
+    pais=$(echo -n "$pais" | jq -sRr @uri)
     resp=$(curl -s "$BASE_URL""$pais")
 
-    if echo "$resp" | jq -e 'type=="array"' >/dev/null; then    #la API devuelve un array si lo encontro, caso contrario envia un msj de error
+    if echo "$resp" | jq -e 'type=="array"' >/dev/null; then
         resultadoCurl="$(echo "$resp" | jq -r '.[] | "Pais: \(.translations.spa.common)|Capital: \((.capital | join(", ")))|Moneda: \((.currencies | keys | join(", ")))"')"
 
         if [ "$TTL_CACHE" -gt 0 ]; then
-            echo "$resultadoCurl" >> "$CACHE_FILE"
+            ttl_arch=$(( $(date +%s) + TTL_CACHE ))
+            echo "$resultadoCurl|$ttl_arch|" >> "$CACHE_FILE"
         fi
+
         echo "$resultadoCurl" | awk -F'|' '{printf "%s\n%s\n%s\n", $1, $2, $3}'
         echo ""
     else
-        echo -e "Error: No se encontro el pais: $pais.\nConsulte en otro idioma o compruebe que este escrito correctamente\n" #si no es array, no lo encontro
+        echo -e "Error: No se encontro el pais: $pais.\nConsulte en otro idioma o compruebe que este escrito correctamente\n"
     fi
 done
-
 
 #curl "https://restcountries.com/v3.1/name/spain"
