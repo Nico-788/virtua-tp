@@ -117,7 +117,6 @@ if [ -f "$CACHE_FILE" ]; then
     done < "$CACHE_FILE"
 fi
 
-# Buscar en API los paises restantes
 for pais in "${paisesABuscar[@]}"; do
     echo -e "\nBuscando en API: $pais\n"
     pais=$(echo -n "$pais" | jq -sRr @uri)
