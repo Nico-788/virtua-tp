@@ -1,4 +1,5 @@
 #!/usr/bin/pwsh
+
 <#
 .SYNOPSIS
     Analiza rutas en una red de transporte público a partir de una matriz de adyacencia.
@@ -36,7 +37,6 @@
     Analiza el archivo "mapa_transporte.txt" y calcula el camino más corto entre la estación 1 y 4.
 
 .NOTES
-    Autor: Tu Nombre
     Compatible con PowerShell en Ubuntu.
 #>
 
@@ -53,9 +53,23 @@ Param(
 
     [Parameter(Mandatory=$false, ParameterSetName="HubTrue")]
     [Parameter(Mandatory=$false, ParameterSetName="CaminoTrue")]
-    [string]$separador = "|"
+    [string]$separador = "|",
+   
+    [Parameter(Mandatory=$true, ParameterSetName="HelpSet")]
+    [switch]$Help
 )
 
+# --- Mostrar ayuda si se pasa -Help ---
+if ($Help) {
+    $scriptPath = $MyInvocation.MyCommand.Path
+    $inside = $false
+    Get-Content $scriptPath | ForEach-Object {
+        if ($_ -match '^<#') { $inside = $true; return }
+        if ($_ -match '^#>') { $inside = $false; return }
+        if ($inside) { $_ }
+    }
+    exit
+}
 function Leer-Matriz {
     param($ruta, $sep)
 
