@@ -75,6 +75,12 @@ then
     exit 1
 fi
 
+# Validar que TTL sea numérico y mayor a 0
+if ! [[ "$TTL" =~ ^[0-9]+$ ]] || [[ "$TTL" -le 0 ]]; then
+    echo "Error: TTL debe ser un número entero positivo"
+    exit 1
+fi
+
 # ======================================
 # Verifica si el pais está en la caché
 # ======================================
