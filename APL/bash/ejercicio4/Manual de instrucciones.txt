@@ -1,0 +1,374 @@
+Este es un manual de instrucciones básicas para testear mi programa, por favor recuerde darle los permisos con chmod al archivo.
+También apenas lo ejecuten recuerde hacer esto: ps aux | grep 4demonioBASH.sh | grep -v grep
+El último pipe es medio de detallista, pero nos ahorra esa doble línea fea sino lo ponemos
+# GUÍA COMPLETA DE TESTING PARA demonio4BASH.sh
+# Copiar y pegar cada sección para probar completamente el ejercicio
+
+# ==========================================
+# PREPARACIÓN INICIAL
+# ==========================================
+
+# 1. CREAR ARCHIVO DE CONFIGURACIÓN DE PATRONES
+# Propósito: Definir qué patrones buscar (simples y regex)
+cat > patrones.conf << 'EOF'
+# Archivo de configuración de patrones para audit.sh
+password
+API_KEY
+secret
+token
+database_password
+private_key
+regex:^.*password\s*=\s*['"].*['"].*$
+regex:API_KEY\s*:\s*['"][^'"]*['"]
+regex:secret.*=.*['"][^'"]+['"]
+EOF
+
+echo "✓ Archivo de configuración creado:"
+cat patrones.conf
+
+# 2. VERIFICAR PERMISOS DEL SCRIPT
+# Propósito: Asegurar que el script sea ejecutable
+chmod +x demonio4BASH.sh
+ls -la demonio4BASH.sh
+
+# 3. TESTING DE AYUDA
+# Propósito: Verificar que la ayuda funciona correctamente
+echo "=== TESTING DE AYUDA ==="
+./demonio4BASH.sh -h
+echo ""
+./demonio4BASH.sh --help
+
+# 4. TESTING SIN PARÁMETROS
+# Propósito: Verificar validación de parámetros obligatorios
+echo "=== TESTING SIN PARÁMETROS ==="
+./demonio4BASH.sh
+
+# 5. TESTING PARÁMETROS FALTANTES
+# Propósito: Verificar que detecta parámetros faltantes
+echo "=== TESTING PARÁMETROS FALTANTES ==="
+./demonio4BASH.sh -r ~/repositorioGit
+echo ""
+./demonio4BASH.sh -r ~/repositorioGit -c patrones.conf
+
+# ==========================================
+# INICIO DEL DEMONIO
+# ==========================================
+
+# 6. INICIAR DEMONIO
+# Propósito: Lanzar el proceso demonio para monitorear el repositorio
+echo "=== INICIANDO DEMONIO ==="
+./demonio4BASH.sh -r ~/repositorioGit -c patrones.conf -l audit_test.log -a 5
+
+# 7. VERIFICAR QUE EL DEMONIO ESTÁ CORRIENDO
+# Propósito: Confirmar que el proceso demonio se ejecuta en segundo plano
+sleep 2
+ps aux | grep demonio4BASH.sh | grep -v grep
+echo "✓ Demonio verificado"
+
+# 8. VERIFICAR LOCKFILE
+# Propósito: Confirmar control de duplicados
+ls -la /tmp/audit_daemon_repositorioGit.lock
+cat /tmp/audit_daemon_repositorioGit.lock
+echo "✓ Lockfile verificado"
+
+# 9. VERIFICAR ARCHIVO DE LOG INICIAL
+# Propósito: Confirmar que se puede escribir en el log
+ls -la ~/audit_test.log
+echo "✓ Archivo de log creado"
+
+# ==========================================
+# CREACIÓN DE CONTENIDO SENSIBLE
+# ==========================================
+
+# 10. IR AL REPOSITORIO GIT
+# Propósito: Posicionarse en el directorio correcto para hacer commits
+cd ~/repositorioGit
+pwd
+git status
+
+# 11. CREAR ARCHIVO CON PATRONES SIMPLES
+# Propósito: Probar detección de patrones literales
+echo "=== CREANDO ARCHIVOS CON CONTENIDO SENSIBLE ==="
+cat > test_config.js << 'EOF'
+const config = {
+    database: {
+        password: "secret123"
+    },
+    api: {
+        API_KEY: "abc123def456",
+        secret: "my_secret_token"
+    },
+    auth: {
+        token: "auth_token_123"
+    }
+};
+EOF
+
+echo "✓ Archivo test_config.js creado:"
+cat test_config.js
+
+# 12. CREAR ARCHIVO CON PATRONES REGEX
+# Propósito: Probar detección de expresiones regulares
+cat > settings.py << 'EOF'
+# Configuration settings
+password = "regex_test_password"
+API_KEY: "regex_api_key_test"
+secret_var = "this_is_a_secret"
+database_password = "db_secret_123"
+normal_variable = "no_pattern_here"
+EOF
+
+echo "✓ Archivo settings.py creado:"
+cat settings.py
+
+# 13. CREAR ARCHIVO .ENV CON MÚLTIPLES PATRONES
+# Propósito: Probar detección en archivos de variables de entorno
+cat > .env << 'EOF'
+DB_PASSWORD=secretpassword123
+API_KEY=sk-1234567890abcdef
+SECRET_TOKEN=secret_abc_def_123
+PRIVATE_KEY=my_private_key
+NORMAL_VAR=just_a_normal_value
+EOF
+
+echo "✓ Archivo .env creado:"
+cat .env
+
+# ==========================================
+# TESTING DE DETECCIÓN INICIAL
+# ==========================================
+
+# 14. HACER COMMIT INICIAL
+# Propósito: Activar la detección del demonio con múltiples archivos
+echo "=== TESTING DETECCIÓN INICIAL ==="
+git add test_config.js settings.py .env
+git commit -m "Initial commit with sensitive data for testing"
+
+# 15. ESPERAR DETECCIÓN
+# Propósito: Dar tiempo al demonio para procesar el commit
+echo "Esperando detección de patrones (8 segundos)..."
+sleep 8
+
+# 16. VERIFICAR LOG INICIAL
+# Propósito: Confirmar que se detectaron los patrones
+echo "=== RESULTADOS DE DETECCIÓN INICIAL ==="
+cat ~/audit_test.log
+
+# 17. ESTADÍSTICAS INICIALES
+# Propósito: Mostrar resumen de detecciones
+echo "Total alertas detectadas:"
+grep -c "Alerta:" ~/audit_test.log
+echo "Archivos analizados:"
+grep "Alerta:" ~/audit_test.log | cut -d"'" -f4 | sort | uniq
+echo "Patrones únicos detectados:"
+grep "Alerta:" ~/audit_test.log | cut -d"'" -f2 | sort | uniq
+
+# ==========================================
+# TESTING DE DETECCIÓN EN TIEMPO REAL
+# ==========================================
+
+# 18. MODIFICAR ARCHIVO EXISTENTE
+# Propósito: Probar detección de cambios en archivos ya existentes
+echo "=== TESTING DETECCIÓN EN TIEMPO REAL ==="
+echo 'const new_password = "additional_secret";' >> test_config.js
+echo 'const database_password = "db_new_secret";' >> test_config.js
+
+git add test_config.js
+git commit -m "Added additional passwords"
+
+sleep 8
+echo "Log después de modificación:"
+tail -5 ~/audit_test.log
+
+# 19. CREAR ARCHIVO COMPLETAMENTE NUEVO
+# Propósito: Probar detección en archivos nuevos
+cat > database.conf << 'EOF'
+[database]
+host=localhost
+username=admin
+password="db_secret_password"
+api_key="secret_api_key_12345"
+private_key="-----BEGIN RSA PRIVATE KEY-----"
+[redis]
+auth_token="redis_secret_token"
+EOF
+
+git add database.conf
+git commit -m "Added database configuration file"
+
+sleep 8
+echo "Log después de archivo nuevo:"
+tail -5 ~/audit_test.log
+
+# 20. CREAR ARCHIVO JSON CON PATRONES REGEX
+# Propósito: Probar patrones regex en formato JSON
+cat > config.json << 'EOF'
+{
+  "database": {
+    "password": "json_test_password"
+  },
+  "api": {
+    "API_KEY": "sk-json_api_key_test"
+  },
+  "secrets": {
+    "secret": "json_secret_value"
+  }
+}
+EOF
+
+git add config.json
+git commit -m "Added JSON config with regex patterns"
+
+sleep 8
+echo "Log después de archivo JSON:"
+tail -5 ~/audit_test.log
+
+# ==========================================
+# TESTING DE CONTROL DEL DEMONIO
+# ==========================================
+
+# 21. VERIFICAR ESTADO DEL DEMONIO
+# Propósito: Confirmar que el demonio sigue funcionando
+echo "=== VERIFICACIÓN DE ESTADO DEL DEMONIO ==="
+cd ~
+ps aux | grep demonio4BASH.sh | grep -v grep
+echo "✓ Demonio activo"
+
+# 22. TESTING DEMONIO DUPLICADO
+# Propósito: Verificar prevención de múltiples instancias
+echo "=== TESTING PREVENCIÓN DE DUPLICADOS ==="
+./demonio4BASH.sh -r ~/repositorioGit -c patrones.conf -l audit_test.log -a 5
+
+# 23. VERIFICAR LOCKFILE ACTIVO
+# Propósito: Confirmar mecanismo de control de duplicados
+ls -la /tmp/audit_daemon_repositorioGit.lock
+echo "PID del demonio activo:"
+cat /tmp/audit_daemon_repositorioGit.lock
+
+# ==========================================
+# TESTING DE INTERVALO PERSONALIZADO
+# ==========================================
+
+# 24. CREAR COMMIT ADICIONAL PARA PROBAR INTERVALO
+# Propósito: Verificar que el intervalo de 5 segundos funciona
+echo "=== TESTING INTERVALO DE DETECCIÓN ==="
+cd ~/repositorioGit
+echo 'const quick_test_password = "interval_test";' >> test_config.js
+git add test_config.js
+git commit -m "Quick test for interval detection"
+
+echo "Esperando detección rápida (intervalo = 5 segundos)..."
+sleep 7
+echo "Detección de intervalo:"
+tail -2 ~/audit_test.log
+
+# ==========================================
+# RESUMEN COMPLETO DE RESULTADOS
+# ==========================================
+
+# 25. ESTADÍSTICAS FINALES
+# Propósito: Mostrar resumen completo de todas las detecciones
+echo "=== RESUMEN FINAL DE DETECCIONES ==="
+echo "Contenido completo del log de auditoría:"
+echo "========================================"
+cat ~/audit_test.log
+echo "========================================"
+
+echo ""
+echo "ESTADÍSTICAS FINALES:"
+echo "Total de alertas detectadas: $(grep -c "Alerta:" ~/audit_test.log)"
+echo "Archivos únicos analizados: $(grep "Alerta:" ~/audit_test.log | cut -d"'" -f4 | sort | uniq | wc -l)"
+echo "Patrones únicos detectados: $(grep "Alerta:" ~/audit_test.log | cut -d"'" -f2 | sort | uniq | wc -l)"
+
+echo ""
+echo "ARCHIVOS ANALIZADOS:"
+grep "Alerta:" ~/audit_test.log | cut -d"'" -f4 | sort | uniq
+
+echo ""
+echo "PATRONES DETECTADOS:"
+grep "Alerta:" ~/audit_test.log | cut -d"'" -f2 | sort | uniq -c
+
+# ==========================================
+# TESTING DE DETENCIÓN DEL DEMONIO
+# ==========================================
+
+# 26. DETENER EL DEMONIO
+# Propósito: Probar funcionalidad de detención
+echo "=== TESTING DETENCIÓN DEL DEMONIO ==="
+cd ~
+./demonio4BASH.sh -r ~/repositorioGit -k
+
+# 27. VERIFICAR QUE EL PROCESO TERMINÓ
+# Propósito: Confirmar que el demonio se detuvo correctamente
+sleep 2
+ps aux | grep demonio4BASH.sh | grep -v grep || echo "✓ Demonio detenido correctamente"
+
+# 28. VERIFICAR LIMPIEZA DE LOCKFILE
+# Propósito: Confirmar que el lockfile fue eliminado
+ls -la /tmp/audit_daemon_repositorioGit.lock 2>/dev/null || echo "✓ Lockfile eliminado correctamente"
+
+# 29. TESTING KILL SIN DEMONIO ACTIVO
+# Propósito: Verificar manejo de errores al detener demonio inexistente
+echo "=== TESTING KILL SIN DEMONIO ACTIVO ==="
+./demonio4BASH.sh -r ~/repositorioGit -k
+
+# ==========================================
+# TESTING DE CASOS EXTREMOS
+# ==========================================
+
+# 30. TESTING PARÁMETROS INVÁLIDOS
+# Propósito: Verificar validación robusta de parámetros
+echo "=== TESTING CASOS EXTREMOS ==="
+./demonio4BASH.sh -r ~/repositorioGit -c patrones.conf -l audit_test.log -a abc
+echo ""
+./demonio4BASH.sh -r ~/repositorioGit -c patrones.conf -l audit_test.log -a -5
+echo ""
+./demonio4BASH.sh -r /directorio/inexistente -c patrones.conf -l audit_test.log
+
+# 31. TESTING ARCHIVO DE CONFIGURACIÓN INVÁLIDO
+# Propósito: Verificar manejo de archivos de configuración incorrectos
+./demonio4BASH.sh -r ~/repositorioGit -c archivo_inexistente.conf -l audit_test.log
+
+# ==========================================
+# VERIFICACIÓN FINAL DEL ENTORNO
+# ==========================================
+
+# 32. LIMPIEZA DE ARCHIVOS TEMPORALES
+# Propósito: Verificar que no quedan archivos basura
+echo "=== VERIFICACIÓN FINAL ==="
+ls -la /tmp/audit_* 2>/dev/null || echo "✓ No hay archivos temporales huérfanos"
+
+# 33. VERIFICAR INTEGRIDAD DEL REPOSITORIO
+# Propósito: Confirmar que el repositorio Git está en buen estado
+cd ~/repositorioGit
+git status
+echo "✓ Repositorio Git en estado correcto"
+
+# 34. RESUMEN DE ARCHIVOS CREADOS
+# Propósito: Mostrar todos los archivos generados durante el testing
+echo "=== ARCHIVOS GENERADOS DURANTE EL TESTING ==="
+echo "Archivo de configuración:"
+ls -la ~/patrones.conf
+echo "Archivo de log:"
+ls -la ~/audit_test.log
+echo "Archivos de prueba en repositorio:"
+ls -la ~/repositorioGit/{test_config.js,settings.py,.env,database.conf,config.json} 2>/dev/null
+
+echo ""
+echo "=== TESTING COMPLETADO EXITOSAMENTE ==="
+echo "El demonio audit demostró funcionamiento completo:"
+echo "✓ Detección de patrones simples y regex"
+echo "✓ Monitoreo en tiempo real de cambios Git"
+echo "✓ Logging con timestamps correctos"
+echo "✓ Control de procesos demonio"
+echo "✓ Validación robusta de parámetros"
+echo "✓ Manejo correcto de señales y limpieza"
+
+# ==========================================
+# COMANDOS OPCIONALES PARA REINICIAR TESTING
+# ==========================================
+
+# Si quieres ejecutar el testing nuevamente:
+# rm -f ~/audit_test.log ~/patrones.conf
+# cd ~/repositorioGit && git reset --hard HEAD~5
+# Luego ejecutar toda la guía nuevamente

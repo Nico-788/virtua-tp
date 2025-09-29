@@ -4,13 +4,19 @@
 
 #FUNCION QUE MUESTRA LA AYUDA, SINO SABES QUE HACER, LA USAS
 mostrar_ayuda() {
-    echo "Uso: $0 -r <repo> -c <config> [-l <log>] [-k]"
-    echo "  -r, --repo         Ruta del repositorio Git"
-    echo "  -c, --configuracion Archivo de patrones"
-    echo "  -l, --log          Archivo de log (opcional)"
+    echo "Uso: $0 -r <repo> -c <config> -l <log> [-a <intervalo>] [-k]"
+    echo "  -r, --repo         Ruta del repositorio Git (OBLIGATORIO)"
+    echo "  -c, --configuracion Archivo de patrones (OBLIGATORIO)"
+    echo "  -l, --log          Archivo de log (OBLIGATORIO)"
     echo "  -k, --kill         Detener demonio"
     echo "  -a, --alerta       Intervalo de alerta en segundos (opcional, por defecto 10s)"
     echo "  -h, --help         Mostrar esta ayuda"
+    echo ""
+    echo "Ejemplo archivo de configuración (patrones.conf):"
+    echo "  password"
+    echo "  API_KEY"
+    echo "  secret"
+    echo "  regex:^.*API_KEY\\s*=\\s*['\"].*['\"].*$"
 }
 
 #VARIABLES GLOBALES DE LOS DIRECTORIOS QUE PASAN POR PARAMETRO
@@ -18,14 +24,20 @@ REPO=""
 CONFIGURACION=""
 LOG=""
 KILL=false
+INTERVALO=10
 #Este es el vector de patrones que voy a llenar con leer_patrones
 declare -a patrones=()
 
 #FUNCION QUE LEE EL ARCHIVO DE CONFIGURACION Y GUARDA LOS PATRONES EN UN ARRAY
-
 leer_patrones() {
     # Vaciar array por si ya tenía contenido
     patrones=()
+
+    # Verificar que el archivo existe y es legible
+    if [ ! -r "$CONFIGURACION" ]; then
+        echo "ERROR: No se puede leer el archivo de configuración $CONFIGURACION" >&2
+        exit 1
+    fi
 
     # Leer archivo línea por línea
     while IFS= read -r linea || [ -n "$linea" ]; do
@@ -35,11 +47,16 @@ leer_patrones() {
         # Guardar cada línea en el array
         patrones+=("$linea")
     done < "$CONFIGURACION"
+
+    # Verificar que se cargó al menos un patrón
+    if [ ${#patrones[@]} -eq 0 ]; then
+        echo "ERROR: No se encontraron patrones válidos en $CONFIGURACION" >&2
+        exit 1
+    fi
 }
+
 #Caso de querer mostrar los parametros a buscar cargados:
-
 #leer_patrones
-
 # Recorremos todos los patrones
 #for p in "${patrones[@]}"; do
 #    echo "Patrón a buscar: $p"
@@ -52,18 +69,37 @@ escribir_log() {
     local fecha
     fecha=$(date '+%Y-%m-%d %H:%M:%S') #aca te tira la fehca y hs actual
 
-    echo "[$fecha] Alerta: patrón '$patron' encontrado en '$archivo'" >> "$LOG"
+    # CORRECCIÓN: Verificar que se puede escribir en el log
+    if ! echo "[$fecha] Alerta: patrón '$patron' encontrado en '$archivo'" >> "$LOG" 2>/dev/null; then
+        echo "ERROR: No se puede escribir en el archivo de log $LOG" >&2
+        return 1
+    fi
     #el >> "$LOG" agrega la linea al final del archivo de log, sin hacerte desaparecer lo que pusiste antes. es como una apertura append
 }
 
-# Recibe: $1 = archivo a escanear
+# CORRECCIÓN: Función mejorada para buscar patrones con soporte para regex
 buscar_patrones_en_archivo() {
     local archivo="$1"
     local nombre_archivo=$(basename "$archivo")  # Solo el nombre para el log
 
+    # Verificar que el archivo existe y es legible
+    if [ ! -r "$archivo" ]; then
+        return 0
+    fi
+
     for p in "${patrones[@]}"; do
-        if grep -qE "$p" "$archivo"; then
-            escribir_log "$p" "$nombre_archivo"  # Usar nombre corto
+        # CORRECCIÓN: Distinguir entre patrones regex y simples
+        if [[ "$p" =~ ^regex: ]]; then
+            # Es un patrón regex - extraer la parte después de "regex:"
+            local patron_regex="${p#regex:}"
+            if grep -qE "$patron_regex" "$archivo" 2>/dev/null; then
+                escribir_log "$p" "$nombre_archivo"
+            fi
+        else
+            # Es un patrón simple - búsqueda literal
+            if grep -qF "$p" "$archivo" 2>/dev/null; then
+                escribir_log "$p" "$nombre_archivo"
+            fi
         fi
     done
 }
@@ -99,19 +135,63 @@ validar_parametros(){
             echo "ERROR: El repositorio $REPO no existe"
             exit 1
         fi
+        # CORRECCIÓN: Validar que sea un repositorio Git válido
+        if [ ! -d "$REPO/.git" ]; then
+            echo "ERROR: $REPO no es un repositorio Git válido"
+            exit 1
+        fi
         # Para kill no necesitamos validar config ni log
         return 0
     fi
-    #verifico si está vacío o no existe el repositorio
-    if [ -z "$REPO" ] || [ ! -d "$REPO" ] || [ ! -d "$REPO/.git" ] ; then #mal estaba: if[ -z "$REPO" || ! -d "$REPO" ]; then
-        echo "ERROR, falta el parametro -r o --repo, el string que me diste tiene longitud 0"
+
+    # CORRECCIÓN: Validación más estricta - todos los parámetros son obligatorios
+    if [ -z "$REPO" ]; then
+        echo "ERROR: El parámetro -r/--repo es obligatorio"
+        mostrar_ayuda
         exit 1
     fi
-    #verifico si está vacío o no existe el archivo de log
-        # 4. Validar LOG (opcional, si no se especifica usar por defecto)
+
+    if [ -z "$CONFIGURACION" ]; then
+        echo "ERROR: El parámetro -c/--configuracion es obligatorio"
+        mostrar_ayuda
+        exit 1
+    fi
+
     if [ -z "$LOG" ]; then
-        LOG="$REPO/audit.log"
-        echo "INFO: Usando archivo de log por defecto: $LOG"
+        echo "ERROR: El parámetro -l/--log es obligatorio"
+        mostrar_ayuda
+        exit 1
+    fi
+
+    #verifico si está vacío o no existe el repositorio
+    if [ ! -d "$REPO" ]; then
+        echo "ERROR: El directorio $REPO no existe"
+        exit 1
+    fi
+
+    # CORRECCIÓN: Validar que sea un repositorio Git válido
+    if [ ! -d "$REPO/.git" ]; then
+        echo "ERROR: $REPO no es un repositorio Git válido (falta directorio .git)"
+        exit 1
+    fi
+
+    # CORRECCIÓN: Validar que git funciona en el repositorio
+    if ! git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+        echo "ERROR: $REPO no es un repositorio Git funcional"
+        exit 1
+    fi
+
+    #verifico si está vacío o no existe el archivo de configuración
+    if [ ! -f "$CONFIGURACION" ]; then
+        echo "ERROR: El archivo de configuración $CONFIGURACION no existe"
+        exit 1
+    fi
+
+    # CORRECCIÓN: Verificar que podemos escribir en el directorio del log
+    local log_dir=$(dirname "$LOG")
+    if [ ! -d "$log_dir" ]; then
+        echo "ERROR: El directorio del archivo de log $log_dir no existe"
+        exit 1
     fi
 
     # Verificar que podemos escribir en el archivo de log
@@ -119,13 +199,13 @@ validar_parametros(){
         echo "ERROR: No se puede escribir en el archivo de log $LOG"
         exit 1
     fi
-    if [ -z "$CONFIGURACION" ] || [ ! -f "$CONFIGURACION" ]; then
 
-        echo "ERROR, el parametro -c o --configuracion no lo pusiste "
+    # CORRECCIÓN: Validar intervalo si se especifica
+    if ! [[ "$INTERVALO" =~ ^[0-9]+$ ]] || [ "$INTERVALO" -lt 1 ]; then
+        echo "ERROR: El intervalo debe ser un número entero mayor a 0"
         exit 1
     fi
 }
-
 
 #Qué hace un demonio real
 #Un proceso demonio debe:
@@ -136,11 +216,11 @@ validar_parametros(){
 #Evitar duplicados (usando un archivo PID típico).
 
 iniciar_demonio() {
-    ///Acá generamos el nombre del lockfile que sería donde depositaremos el PID del demonio
+    # Acá generamos el nombre del lockfile que sería donde depositaremos el PID del demonio
     local LOCKFILE="/tmp/audit_daemon_$(basename "$REPO").lock"
-    /// chequeamos que si ya hay un archivo de diablo, cuidando el mismo repositorio, osea el directorio, no generamos otro
+    # chequeamos que si ya hay un archivo de diablo, cuidando el mismo repositorio, osea el directorio, no generamos otro
     # PASO 1: Control de duplicados
-    if [ -f "$LOCKFILE" ]; then #
+    if [ -f "$LOCKFILE" ]; then
         local PID=$(cat "$LOCKFILE" 2>/dev/null)
         if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
             echo "ERROR: Demonio ya está corriendo (PID: $PID)"
@@ -185,24 +265,24 @@ convertir_a_demonio_completo() {
     REPO="$DAEMON_REPO"
     CONFIGURACION="$DAEMON_CONFIG"
     LOG="$DAEMON_LOG"
+    INTERVALO="$DAEMON_INTERVALO"
     local LOCKFILE="$DAEMON_LOCKFILE"
 
-    # Cambiar directorio de trabajo
-    cd / || { #si puede cambiar entra, sino muestra error y sale
-        echo "ERROR: No se puede cambiar a directorio raíz" >&2
-        exit 1 #El error es sobre stderr
-    }
-    #Si puedo cambiar el directorio raiz sigo
-    # Cerrar file descriptors
-    exec 0</dev/null   # stdin desde /dev/null
-    exec 1>/dev/null   # stdout a /dev/null
-    exec 2>&1          # stderr sigue a stdout
+    # CORRECCIÓN: Solo cambiar directorio si el actual no es accesible
+    if ! pwd >/dev/null 2>&1; then
+        cd / || exit 1
+    fi
 
     # umask predecible
     umask 022
 
     # Guardar PID del demonio real
     echo $$ > "$LOCKFILE"
+
+    # Cerrar file descriptors
+    exec 0</dev/null   # stdin desde /dev/null
+    exec 1>/dev/null   # stdout a /dev/null
+    exec 2>/dev/null   # stderr a /dev/null también
 
     # Manejo de señales para limpieza
     #TERM es un kill, INT es ctrl-c, QUIT es ctrl+
@@ -215,7 +295,6 @@ convertir_a_demonio_completo() {
     ejecutar_bucle_demonio "$LOCKFILE"
 }
 
-
 ejecutar_bucle_demonio() {
     local LOCKFILE="$1" #Recibo el Repo por parámetro
     local ULTIMO_COMMIT_FILE="/tmp/audit_ultimo_commit_$(basename "$REPO")"
@@ -223,18 +302,34 @@ ejecutar_bucle_demonio() {
     # Cargar patrones en el proceso demonio
     leer_patrones
 
-    # Obtener commit inicial
-    local ULTIMO_COMMIT=$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo "")
+    # CORRECCIÓN: Obtener commit inicial con mejor manejo de errores
+    local ULTIMO_COMMIT
+    if ! ULTIMO_COMMIT=$(git -C "$REPO" rev-parse HEAD 2>/dev/null); then
+        # Si no hay commits, usar cadena vacía
+        ULTIMO_COMMIT=""
+    fi
     echo "$ULTIMO_COMMIT" > "$ULTIMO_COMMIT_FILE"
 
     # Bucle infinito de monitoreo
     while [ -f "$LOCKFILE" ]; do #mientras exista el archivo con el pid cargado sigo
-        # Verificar si hay nuevos commits
-        local COMMIT_ACTUAL=$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo "")
+        # CORRECCIÓN: Verificar si hay nuevos commits con mejor manejo de errores
+        local COMMIT_ACTUAL
+        if ! COMMIT_ACTUAL=$(git -C "$REPO" rev-parse HEAD 2>/dev/null); then
+            # Si hay error, esperar y continuar
+            sleep "${INTERVALO:-10}"
+            continue
+        fi
 
         if [ -n "$COMMIT_ACTUAL" ] && [ "$COMMIT_ACTUAL" != "$ULTIMO_COMMIT" ]; then
             # Hay cambios - obtener archivos modificados
-            local archivos=$(git -C "$REPO" diff --name-only "$ULTIMO_COMMIT" "$COMMIT_ACTUAL" 2>/dev/null)
+            local archivos
+            if [ -z "$ULTIMO_COMMIT" ]; then
+                # Primer commit - analizar todos los archivos
+                archivos=$(git -C "$REPO" ls-tree -r --name-only HEAD 2>/dev/null)
+            else
+                # Commits posteriores - solo archivos modificados
+                archivos=$(git -C "$REPO" diff --name-only "$ULTIMO_COMMIT" "$COMMIT_ACTUAL" 2>/dev/null)
+            fi
 
             # Procesar cada archivo modificado
             for archivo in $archivos; do
@@ -269,7 +364,6 @@ manejar_parametros_demonio() {
         LOG="$DAEMON_LOG"
         INTERVALO="$DAEMON_INTERVALO"
 
-        DAEMON_SESSION=1
         convertir_a_demonio_completo
         return 0
     fi
@@ -291,9 +385,20 @@ main() {
     fi
 
     # SEGUNDO: Parseo de parámetros solo si NO es --daemon-final
-    OPTIONS=$(getopt -o r:c:l:a:kh --long repo:,configuracion:,log:,alerta:,kill,help,daemon-final -- "$@")
-    eval set -- "$OPTIONS"
+    # CORRECCIÓN: Verificar que getopt está disponible
+    if ! command -v getopt >/dev/null 2>&1; then
+        echo "ERROR: El comando getopt no está disponible en este sistema"
+        exit 1
+    fi
 
+    # CORRECCIÓN: Mejor manejo de errores en getopt
+    if ! OPTIONS=$(getopt -o r:c:l:a:kh --long repo:,configuracion:,log:,alerta:,kill,help,daemon-final -- "$@" 2>/dev/null); then
+        echo "ERROR: Parámetros inválidos"
+        mostrar_ayuda
+        exit 1
+    fi
+
+    eval set -- "$OPTIONS"
 
     while true; do
         case "$1" in
@@ -305,7 +410,7 @@ main() {
             -h| --help) mostrar_ayuda; exit 0 ;;
             --daemon-final) shift ;;
             --) shift; break ;;
-            *) echo "Error: Tiraste cualquier cosa"; exit 1 ;;
+            *) echo "Error: Parámetro desconocido: $1"; mostrar_ayuda; exit 1 ;;
         esac
     done
 
@@ -318,6 +423,7 @@ main() {
     leer_patrones
     iniciar_demonio "$@"
 }
+
 # FUNCIÓN PARA DETENER
 detener_demonio() {
     local LOCKFILE="/tmp/audit_daemon_$(basename "$REPO").lock"
@@ -326,11 +432,19 @@ detener_demonio() {
         exit 1
     fi
 
-    local PID=$(cat "$LOCKFILE")
+    local PID=$(cat "$LOCKFILE" 2>/dev/null)
+    if [ -z "$PID" ]; then
+        echo "ERROR: No se pudo leer el PID del lockfile"
+        rm -f "$LOCKFILE"
+        exit 1
+    fi
+
     if kill -0 "$PID" 2>/dev/null; then
+        echo "INFO: Deteniendo demonio (PID: $PID)..."
         kill -TERM "$PID" #activa el term de la anterior función del demonio
         sleep 2 #sino lo mató con la básica, forzamos el kill
         if kill -0 "$PID" 2>/dev/null; then
+            echo "INFO: Forzando terminación..."
             kill -KILL "$PID"
         fi
         echo "INFO: Demonio detenido (PID: $PID)"
@@ -343,36 +457,3 @@ detener_demonio() {
 # Ejecutar función principal
 main "$@"
 
-# 1. Verificar que el proceso está corriendo
-#ps aux | grep 4exercise
-
-# 2. Hacer un commit para probar el monitoreo
-#cd ~/repositorioGit
-#echo 'const new_password = "secret123"' >> test_config.js
-#git add test_config.js
-#git commit -m "Added password for testing"
-
-# 3. Esperar unos segundos y verificar el log
-#sleep 15
-#cat ~/repositorioGit/audit.log
-
-# 4. Probar detener el demonio
-#cd ~
-#./4exercise.sh -r ~/repositorioGit -k
-
-
-# 1. Verificar que el proceso está corriendo
-#ps aux | grep 4exercise
-
-# 2. Hacer un commit para probar el monitoreo
-#cd ~/repositorioGit
-#echo 'const new_password = "secret123"' >> test_config.js
-#git add test_config.js
-#git commit -m "Added password for testing"
-
-# 3. Esperar unos segundos y verificar el log
-#sleep 15
-#cat ~/repositorioGit/audit.log
-
-# 4. Probar detener el demonio
-#cd ~
