@@ -91,8 +91,6 @@ function limpiar_cache() {
         mv "$tmpfile" "$CACHE_FILE"
         if [ ! -s "$CACHE_FILE" ]; then
             rm -r "$DIRECTORY_SCRIPT"/.tmp
-        else
-            echo "no entra"
         fi
     fi
 }
@@ -107,11 +105,8 @@ if [ -f "$CACHE_FILE" ]; then
         for i in "${!tmpPaises[@]}"; do
             currentPais="${tmpPaises[i]}"
             if echo "$info" | grep -qi "$currentPais"; then
-                echo "$info"
                 ttl_arch="$(echo "$info" | awk -F'|' '{print $4}')"
-                echo "$ttl_arch"
                 result_ttl=$(( $(date +%s) - ttl_arch ))
-                echo "$result_ttl"
                 if [ "$result_ttl" -lt 0 ]; then
                     echo -e "\nBuscando en CACHE: $currentPais\n"
                     echo "$info" | awk -F'|' '{printf "%s\n%s\n%s\n", $1, $2, $3}'
