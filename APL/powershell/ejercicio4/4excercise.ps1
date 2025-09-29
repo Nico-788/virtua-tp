@@ -15,30 +15,24 @@ Ruta del archivo de configuración con patrones a buscar (OBLIGATORIO)
 Ruta del archivo de logs (OBLIGATORIO)
 
 .PARAMETER Alerta
-Intervalo en segundos (opcional, default 10s)
+Intervalo en segundos (opcional. default 10s)
 
 .PARAMETER Kill
 Flag para detener el demonio
 
 .EXAMPLE
-.\4demonio.ps1 -Repo "C:\MyRepo" -Configuracion ".\patrones.conf" -Log ".\audit.log"
+./4demonio.ps1 -Repo "/home/user/MyRepo" -Configuracion "./patrones.conf" -Log "./audit.log"
 
 .EXAMPLE
-.\4demonio.ps1 -Repo "C:\MyRepo" -Kill
+./4demonio.ps1 -Repo "/home/user/MyRepo" -Kill
 #>
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$false)]
-    [ValidateScript({
-        if ($_ -and -not (Test-Path $_ -PathType Container)) { throw "Directorio no existe" }
-        if ($_ -and -not (Test-Path "$_\.git")) { throw "No es repositorio Git" }
-        $true
-    })]
     [string]$Repo,
     
     [Parameter(Mandatory=$false)]
-    [ValidateScript({ if ($_ -and -not (Test-Path $_)) { throw "Archivo no existe" } $true })]
     [string]$Configuracion,
     
     [Parameter(Mandatory=$false)]
@@ -57,6 +51,34 @@ param(
 
 $script:patrones = @()
 
+# Función para obtener path absoluto de forma portable
+function Get-AbsolutePath {
+    param([string]$Path)
+    
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $Path
+    }
+    
+    # Si ya es absoluto (comienza con /)
+    if ($Path.StartsWith('/')) {
+        return $Path
+    }
+    
+    # Si es relativo, combinarlo con la ubicación actual
+    $currentLocation = Get-Location | Select-Object -ExpandProperty Path
+    
+    # Normalizar el path
+    if ($Path.StartsWith('./')) {
+        $Path = $Path.Substring(2)
+    }
+    
+    # Combinar paths
+    $combined = Join-Path $currentLocation $Path
+    
+    # Normalizar barras
+    return $combined.Replace('\', '/')
+}
+
 function Test-ParametrosObligatorios {
     if ($Kill) {
         if (-not $Repo) { Write-Error "ERROR: -Kill requiere -Repo"; exit 1 }
@@ -66,24 +88,56 @@ function Test-ParametrosObligatorios {
     if (-not $Configuracion) { Write-Error "ERROR: -Configuracion obligatorio"; Get-Help $PSCommandPath; exit 1 }
     if (-not $Log) { Write-Error "ERROR: -Log obligatorio"; Get-Help $PSCommandPath; exit 1 }
     
+    # Convertir a paths absolutos
+    $script:Repo = Get-AbsolutePath $Repo
+    $script:Configuracion = Get-AbsolutePath $Configuracion
+    $script:Log = Get-AbsolutePath $Log
+    
+    # Validar Repo
+    if (-not (Test-Path $script:Repo)) {
+        Write-Error "ERROR: El directorio del repositorio '$script:Repo' no existe"
+        exit 1
+    }
+    
+    # Validar Configuracion
+    if (-not (Test-Path $script:Configuracion)) {
+        Write-Error "ERROR: El archivo de configuración '$script:Configuracion' no existe"
+        exit 1
+    }
+    
+    # Crear Log si no existe
     try {
-        if (-not (Test-Path $Log)) { New-Item -Path $Log -ItemType File -Force | Out-Null }
-        Add-Content -Path $Log -Value "" -ErrorAction Stop
+        $logDir = Split-Path $script:Log -Parent
+        if ($logDir -and -not (Test-Path $logDir)) {
+            New-Item -Path $logDir -ItemType Directory -Force | Out-Null
+        }
+        if (-not (Test-Path $script:Log)) {
+            New-Item -Path $script:Log -ItemType File -Force | Out-Null
+        }
+        Add-Content -Path $script:Log -Value "" -ErrorAction Stop
     } catch {
-        Write-Error "ERROR: No se puede escribir en log '$Log'"; exit 1
+        Write-Error "ERROR: No se puede escribir en log '$script:Log'"
+        exit 1
     }
 }
 
 function Read-Patrones {
     $script:patrones = @()
     try {
-        Get-Content $Configuracion | ForEach-Object {
+        $configPath = Get-AbsolutePath $Configuracion
+        
+        if (-not (Test-Path $configPath)) {
+            throw "El archivo de configuración '$configPath' no existe"
+        }
+        
+        Get-Content $configPath | ForEach-Object {
             $line = $_.Trim()
             if ($line -and !$line.StartsWith("#")) { $script:patrones += $line }
         }
         if ($script:patrones.Count -eq 0) { throw "Sin patrones válidos" }
     } catch {
-        Write-Error "ERROR: No se puede leer configuración"; exit 1
+        Write-Error "ERROR: No se puede leer configuración: $_"
+        exit 1
     }
 }
 
@@ -124,35 +178,45 @@ function Search-PatronesEnArchivo {
 
 function Get-RepoIdentifier {
     param([string]$RepoPath)
-    $absolutePath = (Resolve-Path $RepoPath -ErrorAction SilentlyContinue).Path
-    if (-not $absolutePath) { $absolutePath = $RepoPath }
+    $absolutePath = Get-AbsolutePath $RepoPath
     $hash = [System.Security.Cryptography.SHA256]::Create()
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($absolutePath.ToLower())
     $hashBytes = $hash.ComputeHash($bytes)
     return [System.BitConverter]::ToString($hashBytes).Replace("-", "").Substring(0, 16)
 }
 
+function Get-TempDirectory {
+    # Intentar obtener el directorio temporal de forma portable
+    $tempDir = $env:TMPDIR
+    if (-not $tempDir) { $tempDir = $env:TEMP }
+    if (-not $tempDir) { $tempDir = $env:TMP }
+    if (-not $tempDir) { $tempDir = "/tmp" }
+    
+    return $tempDir
+}
+
 function Start-Demonio {
     $repoId = Get-RepoIdentifier -RepoPath $Repo
-    $lockFile = Join-Path $env:TEMP "audit_daemon_$repoId.lock"
+    $tempDir = Get-TempDirectory
+    $lockFile = Join-Path $tempDir "audit_daemon_$repoId.lock"
     
     if (Test-Path $lockFile) {
         try {
             $pidData = Get-Content $lockFile | ConvertFrom-Json
             $proceso = Get-Process -Id $pidData.PID -ErrorAction Stop
-            Write-Error "ERROR: Demonio ya corriendo (PID: $($pidData.PID))"; exit 1
+            Write-Error "ERROR: Demonio ya corriendo (PID: $($pidData.PID))"
+            exit 1
         } catch {
             Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
         }
     }
     
-    $RepoAbs = (Resolve-Path $Repo).Path
-    $ConfigAbs = (Resolve-Path $Configuracion).Path
-    $LogAbs = if (Test-Path $Log) { (Resolve-Path $Log).Path } else { Join-Path (Get-Location) $Log }
+    $RepoAbs = Get-AbsolutePath $Repo
+    $ConfigAbs = Get-AbsolutePath $Configuracion
+    $LogAbs = Get-AbsolutePath $Log
     
     $argumentos = @(
         "-NoProfile"
-        "-WindowStyle", "Hidden"
         "-ExecutionPolicy", "Bypass"
         "-File", "`"$PSCommandPath`""
         "-Repo", "`"$RepoAbs`""
@@ -163,30 +227,30 @@ function Start-Demonio {
     )
     
     try {
-        $proceso = Start-Process -FilePath "powershell.exe" `
+        $proceso = Start-Process -FilePath "pwsh" `
                                  -ArgumentList $argumentos `
-                                 -WindowStyle Hidden `
                                  -PassThru `
                                  -ErrorAction Stop
         
-        $processId = $proceso.Id  # CAMBIO: usar $processId en vez de $pid
+        $processId = $proceso.Id
         
         @{ PID = $processId; Repo = $RepoAbs; Started = (Get-Date -Format "yyyy-MM-dd HH:mm:ss") } | 
             ConvertTo-Json | Set-Content $lockFile
         
         Write-Host "INFO: Demonio iniciado (PID: $processId)"
-        Write-Host "INFO: Para detener: .\4demonio.ps1 -Repo `"$Repo`" -Kill"
+        Write-Host "INFO: Para detener: ./4demonio.ps1 -Repo `"$Repo`" -Kill"
     } catch {
-        Write-Error "ERROR: No se pudo iniciar demonio: $_"; exit 1
+        Write-Error "ERROR: No se pudo iniciar demonio: $_"
+        exit 1
     }
 }
 
 function Start-BucleDemonio {
     $repoId = Get-RepoIdentifier -RepoPath $Repo
-    $lockFile = Join-Path $env:TEMP "audit_daemon_$repoId.lock"
-    $commitFile = Join-Path $env:TEMP "audit_commit_$repoId.txt"
+    $tempDir = Get-TempDirectory
+    $lockFile = Join-Path $tempDir "audit_daemon_$repoId.lock"
+    $commitFile = Join-Path $tempDir "audit_commit_$repoId.txt"
     
-    # CAMBIO: usar $PID (variable automática) directamente
     @{ PID = $PID; Repo = $Repo; Started = (Get-Date -Format "yyyy-MM-dd HH:mm:ss") } |
         ConvertTo-Json | Set-Content $lockFile
     
@@ -238,9 +302,13 @@ function Start-BucleDemonio {
 
 function Stop-Demonio {
     $repoId = Get-RepoIdentifier -RepoPath $Repo
-    $lockFile = Join-Path $env:TEMP "audit_daemon_$repoId.lock"
+    $tempDir = Get-TempDirectory
+    $lockFile = Join-Path $tempDir "audit_daemon_$repoId.lock"
     
-    if (-not (Test-Path $lockFile)) { Write-Error "ERROR: No hay demonio corriendo"; exit 1 }
+    if (-not (Test-Path $lockFile)) {
+        Write-Error "ERROR: No hay demonio corriendo"
+        exit 1
+    }
     
     try {
         $lockData = Get-Content $lockFile | ConvertFrom-Json
