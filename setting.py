@@ -1,0 +1,6 @@
+Configuration settings
+password = regex_test_password
+API_KEY: regex_api_key_test
+secret_var = this_is_a_secret
+database_password = db_secret_123
+normal_variable = no_pattern_here
