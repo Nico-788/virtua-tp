@@ -79,17 +79,21 @@ IFS=',' read -ra paisesABuscar <<< "$NOMBRES_PAISES"
 
 # Función para limpiar cache vencida (solo si TTL > 0)
 function limpiar_cache() {
-    if [ "$TTL_CACHE" -le 0 ]; then return; fi
     if [ -f "$CACHE_FILE" ]; then
         tmpfile=$(mktemp)
         now=$(date +%s)
         while IFS= read -r linea; do
             timestamp="$(echo "$linea" | awk -F'|' '{print $4}')"
-            if [[ "$timestamp" =~ ^[0-9]+$ ]] && (( now - timestamp <= TTL_CACHE )); then
+            if [[ "$timestamp" =~ ^[0-9]+$ ]] && (( now - timestamp <= 0 )); then
                 echo "$linea" >> "$tmpfile"
             fi
         done < "$CACHE_FILE"
         mv "$tmpfile" "$CACHE_FILE"
+        if [ ! -s "$CACHE_FILE" ]; then
+            rm -r "$DIRECTORY_SCRIPT"/.tmp
+        else
+            echo "no entra"
+        fi
     fi
 }
 
