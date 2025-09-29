@@ -73,6 +73,7 @@ param(
 
 # Variables globales del script
 $script:patrones = @()
+$script:LogPath = $Log
 
 # Función para validar parámetros obligatorios
 function Test-ParametrosObligatorios {
@@ -84,7 +85,6 @@ function Test-ParametrosObligatorios {
         return
     }
     
-    # Validar que todos los parámetros obligatorios estén presentes
     if (-not $Repo) {
         Write-Error "ERROR: El parámetro -Repo es obligatorio"
         Get-Help $PSCommandPath -Detailed
@@ -107,8 +107,7 @@ function Test-ParametrosObligatorios {
     try {
         $logDir = Split-Path $Log -Parent
         if ($logDir -and -not (Test-Path $logDir)) {
-            Write-Error "ERROR: El directorio del archivo de log '$logDir' no existe"
-            exit 1
+            New-Item -Path $logDir -ItemType Directory -Force | Out-Null
         }
         
         # Crear archivo de log si no existe
@@ -117,10 +116,11 @@ function Test-ParametrosObligatorios {
         }
         
         # Probar escritura
-        Add-Content -Path $Log -Value "" -ErrorAction Stop
+        $testWrite = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] INFO: Inicializando log..."
+        Add-Content -Path $Log -Value $testWrite -ErrorAction Stop
     }
     catch {
-        Write-Error "ERROR: No se puede escribir en el archivo de log '$Log'"
+        Write-Error "ERROR: No se puede escribir en el archivo de log '$Log': $_"
         exit 1
     }
 }
@@ -132,9 +132,10 @@ function Read-Patrones {
     try {
         $lineas = Get-Content $Configuracion -ErrorAction Stop
         foreach ($linea in $lineas) {
+            $lineaTrim = $linea.Trim()
             # Saltar líneas vacías o comentarios
-            if ($linea -and !$linea.StartsWith("#")) {
-                $script:patrones += $linea.Trim()
+            if ($lineaTrim -and !$lineaTrim.StartsWith("#")) {
+                $script:patrones += $lineaTrim
             }
         }
         
@@ -144,12 +145,12 @@ function Read-Patrones {
         }
     }
     catch {
-        Write-Error "ERROR: No se puede leer el archivo de configuración '$Configuracion'"
+        Write-Error "ERROR: No se puede leer el archivo de configuración '$Configuracion': $_"
         exit 1
     }
 }
 
-# Función para escribir en el log
+# Función para escribir en el log de forma thread-safe
 function Write-AlertaLog {
     param(
         [string]$Patron,
@@ -160,10 +161,34 @@ function Write-AlertaLog {
     $mensaje = "[$fecha] Alerta: patrón '$Patron' encontrado en '$Archivo'"
     
     try {
-        Add-Content -Path $Log -Value $mensaje -ErrorAction Stop
+        # Lock para evitar problemas de escritura concurrente
+        $mutex = New-Object System.Threading.Mutex($false, "AuditLogMutex")
+        [void]$mutex.WaitOne()
+        try {
+            Add-Content -Path $script:LogPath -Value $mensaje -ErrorAction Stop
+        }
+        finally {
+            $mutex.ReleaseMutex()
+            $mutex.Dispose()
+        }
     }
     catch {
-        Write-Error "ERROR: No se puede escribir en el archivo de log '$Log'"
+        Write-Error "ERROR: No se puede escribir en el archivo de log: $_"
+    }
+}
+
+# Función para escribir logs informativos
+function Write-InfoLog {
+    param([string]$Mensaje)
+    
+    $fecha = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $mensajeCompleto = "[$fecha] INFO: $Mensaje"
+    
+    try {
+        Add-Content -Path $script:LogPath -Value $mensajeCompleto -ErrorAction Stop
+    }
+    catch {
+        # Silenciar errores de log informativo
     }
 }
 
@@ -171,15 +196,19 @@ function Write-AlertaLog {
 function Search-PatronesEnArchivo {
     param([string]$ArchivoPath)
     
-    $nombreArchivo = Split-Path $ArchivoPath -Leaf
-    
-    # Verificar que el archivo existe y es legible
     if (-not (Test-Path $ArchivoPath -PathType Leaf)) {
         return
     }
     
+    $nombreArchivo = Split-Path $ArchivoPath -Leaf
+    
     try {
+        # Leer contenido completo del archivo
         $contenido = Get-Content $ArchivoPath -Raw -ErrorAction Stop
+        
+        if (-not $contenido) {
+            return
+        }
         
         foreach ($patron in $script:patrones) {
             $encontrado = $false
@@ -188,13 +217,19 @@ function Search-PatronesEnArchivo {
             if ($patron.StartsWith("regex:")) {
                 # Es un patrón regex - extraer la parte después de "regex:"
                 $patronRegex = $patron.Substring(6)
-                if ($contenido -match $patronRegex) {
-                    $encontrado = $true
+                try {
+                    if ($contenido -match $patronRegex) {
+                        $encontrado = $true
+                    }
+                }
+                catch {
+                    Write-InfoLog "Advertencia: Regex inválido '$patronRegex'"
                 }
             }
             else {
-                # Es un patrón simple - búsqueda literal
-                if ($contenido -match [regex]::Escape($patron)) {
+                # Es un patrón simple - búsqueda literal (case insensitive)
+                $patronEscapado = [regex]::Escape($patron)
+                if ($contenido -match "(?i)$patronEscapado") {
                     $encontrado = $true
                 }
             }
@@ -205,50 +240,99 @@ function Search-PatronesEnArchivo {
         }
     }
     catch {
-        # Error leyendo archivo, continuar con el siguiente
+        Write-InfoLog "Advertencia: No se pudo leer '$nombreArchivo': $_"
     }
+}
+
+# Función para obtener el nombre único del repositorio
+function Get-RepoIdentifier {
+    param([string]$RepoPath)
+    
+    # Convertir a ruta absoluta y normalizar
+    $absolutePath = (Resolve-Path $RepoPath -ErrorAction SilentlyContinue).Path
+    if (-not $absolutePath) {
+        $absolutePath = $RepoPath
+    }
+    
+    # Crear hash único basado en la ruta
+    $hash = [System.Security.Cryptography.SHA256]::Create()
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($absolutePath.ToLower())
+    $hashBytes = $hash.ComputeHash($bytes)
+    $hashString = [System.BitConverter]::ToString($hashBytes).Replace("-", "").Substring(0, 16)
+    
+    return $hashString
 }
 
 # Función para iniciar el demonio
 function Start-Demonio {
-    $repoName = Split-Path $Repo -Leaf
-    $lockFile = Join-Path $env:TEMP "audit_daemon_$repoName.lock"
+    $repoId = Get-RepoIdentifier -RepoPath $Repo
+    $lockFile = Join-Path $env:TEMP "audit_daemon_$repoId.lock"
     
     # Control de duplicados
     if (Test-Path $lockFile) {
         try {
-            $IdDelProceso = Get-Content $lockFile -ErrorAction Stop
-            $proceso = Get-Process -Id $IdDelProceso -ErrorAction Stop
-            Write-Error "ERROR: Demonio ya está corriendo (PID: $IdDelProceso)"
+            $pidData = Get-Content $lockFile -ErrorAction Stop | ConvertFrom-Json
+            $proceso = Get-Process -Id $pidData.PID -ErrorAction Stop
+            
+            Write-Error "ERROR: Demonio ya está corriendo para este repositorio (PID: $($pidData.PID))"
+            Write-Host "Para detenerlo use: .\4demonio.ps1 -Repo `"$Repo`" -Kill"
             exit 1
         }
         catch {
-            Write-Host "INFO: Limpiando lockfile de proceso muerto"
+            Write-Host "INFO: Limpiando lockfile de proceso anterior..."
             Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
         }
     }
     
     Write-Host "INFO: Iniciando proceso demonio..."
     
+    # Convertir rutas a absolutas para el demonio
+    $RepoAbsoluto = (Resolve-Path $Repo).Path
+    $ConfigAbsoluto = (Resolve-Path $Configuracion).Path
+    $LogAbsoluto = if (Test-Path $Log) { 
+        (Resolve-Path $Log).Path 
+    } else { 
+        Join-Path (Get-Location).Path $Log
+    }
+    
     # Crear proceso demonio en segundo plano
+    $scriptPath = $PSCommandPath
     $argumentos = @(
         "-NoProfile"
+        "-WindowStyle", "Hidden"
         "-ExecutionPolicy", "Bypass"
-        "-File", $PSCommandPath
-        "-Repo", "`"$Repo`""
-        "-Configuracion", "`"$Configuracion`""
-        "-Log", "`"$Log`""
-        "-Alerta", "$Alerta"
+        "-File", "`"$scriptPath`""
+        "-Repo", "`"$RepoAbsoluto`""
+        "-Configuracion", "`"$ConfigAbsoluto`""
+        "-Log", "`"$LogAbsoluto`""
+        "-Alerta", $Alerta
         "-DaemonMode"
     )
     
     try {
-        $proceso = Start-Process -FilePath "powershell.exe" -ArgumentList $argumentos -PassThru -ErrorAction Stop
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = "powershell.exe"
+        $startInfo.Arguments = $argumentos -join " "
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $false
+        $startInfo.RedirectStandardError = $false
+        
+        $proceso = [System.Diagnostics.Process]::Start($startInfo)
         $IdDelProceso = $proceso.Id
         
-        # Guardar PID en lockfile
-        Set-Content -Path $lockFile -Value $IdDelProceso
+        # Guardar información del proceso en lockfile
+        $lockData = @{
+            PID = $IdDelProceso
+            Repo = $RepoAbsoluto
+            Started = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        }
+        $lockData | ConvertTo-Json | Set-Content -Path $lockFile
+        
         Write-Host "INFO: Demonio iniciado con PID $IdDelProceso"
+        Write-Host "INFO: Monitoreando: $RepoAbsoluto"
+        Write-Host "INFO: Log de alertas: $LogAbsoluto"
+        Write-Host "INFO: Intervalo de verificación: $Alerta segundos"
         Write-Host "INFO: Para detener usar: .\4demonio.ps1 -Repo `"$Repo`" -Kill"
     }
     catch {
@@ -259,25 +343,43 @@ function Start-Demonio {
 
 # Función del bucle principal del demonio
 function Start-BucleDemonio {
-    $repoName = Split-Path $Repo -Leaf
-    $lockFile = Join-Path $env:TEMP "audit_daemon_$repoName.lock"
-    $ultimoCommitFile = Join-Path $env:TEMP "audit_ultimo_commit_$repoName.txt"
+    $repoId = Get-RepoIdentifier -RepoPath $Repo
+    $lockFile = Join-Path $env:TEMP "audit_daemon_$repoId.lock"
+    $ultimoCommitFile = Join-Path $env:TEMP "audit_ultimo_commit_$repoId.txt"
     
-    # Actualizar PID en lockfile (porque ahora es el proceso real del demonio)
+    # Actualizar PID en lockfile
     $IdDelProcesoActual = [System.Diagnostics.Process]::GetCurrentProcess().Id
-    Set-Content -Path $lockFile -Value $IdDelProcesoActual
+    try {
+        $lockData = @{
+            PID = $IdDelProcesoActual
+            Repo = $Repo
+            Started = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        }
+        $lockData | ConvertTo-Json | Set-Content -Path $lockFile
+    }
+    catch {
+        Write-InfoLog "ERROR: No se pudo actualizar lockfile"
+        exit 1
+    }
     
     # Cargar patrones
     Read-Patrones
+    Write-InfoLog "Demonio iniciado - Monitoreando repositorio: $Repo"
+    Write-InfoLog "Patrones cargados: $($script:patrones.Count)"
     
     # Obtener commit inicial
+    $ultimoCommit = ""
     try {
         Push-Location $Repo -ErrorAction Stop
         $ultimoCommit = (git rev-parse HEAD 2>$null)
-        if (-not $ultimoCommit) { $ultimoCommit = "" }
+        if (-not $ultimoCommit) { 
+            $ultimoCommit = "EMPTY"
+        }
+        Write-InfoLog "Commit inicial: $ultimoCommit"
     }
     catch {
-        $ultimoCommit = ""
+        Write-InfoLog "ERROR: No se pudo acceder al repositorio Git"
+        $ultimoCommit = "EMPTY"
     }
     finally {
         Pop-Location
@@ -286,30 +388,64 @@ function Start-BucleDemonio {
     Set-Content -Path $ultimoCommitFile -Value $ultimoCommit
     
     # Bucle infinito de monitoreo
+    $iteracion = 0
     while (Test-Path $lockFile) {
+        $iteracion++
+        
         try {
             Push-Location $Repo -ErrorAction Stop
-            $commitActual = (git rev-parse HEAD 2>$null)
-            if (-not $commitActual) { $commitActual = "" }
             
-            if ($commitActual -and ($commitActual -ne $ultimoCommit)) {
-                # Hay cambios - obtener archivos modificados
-                if ($ultimoCommit) {
-                    $archivos = (git diff --name-only $ultimoCommit $commitActual 2>$null)
+            # Obtener commit actual
+            $commitActual = (git rev-parse HEAD 2>$null)
+            if (-not $commitActual) { 
+                $commitActual = "EMPTY"
+            }
+            
+            # Verificar si hay cambios
+            if ($commitActual -ne "EMPTY" -and $commitActual -ne $ultimoCommit) {
+                Write-InfoLog "Nuevo commit detectado: $commitActual"
+                
+                # Obtener archivos modificados
+                $archivos = @()
+                if ($ultimoCommit -ne "EMPTY") {
+                    # Hay commit anterior - obtener diff
+                    $diffOutput = (git diff --name-only $ultimoCommit $commitActual 2>$null)
+                    if ($diffOutput) {
+                        $archivos = $diffOutput -split "`n" | Where-Object { $_.Trim() }
+                    }
                 }
                 else {
                     # Primer commit - analizar todos los archivos
-                    $archivos = (git ls-tree -r --name-only HEAD 2>$null)
+                    $lsOutput = (git ls-tree -r --name-only HEAD 2>$null)
+                    if ($lsOutput) {
+                        $archivos = $lsOutput -split "`n" | Where-Object { $_.Trim() }
+                    }
                 }
                 
+                Write-InfoLog "Archivos a analizar: $($archivos.Count)"
+                
                 # Procesar cada archivo modificado
+                $patronesEncontrados = 0
                 foreach ($archivo in $archivos) {
                     if ($archivo) {
                         $archivoCompleto = Join-Path $Repo $archivo
                         if (Test-Path $archivoCompleto -PathType Leaf) {
+                            $logSizeBefore = (Get-Item $script:LogPath).Length
                             Search-PatronesEnArchivo -ArchivoPath $archivoCompleto
+                            $logSizeAfter = (Get-Item $script:LogPath).Length
+                            
+                            if ($logSizeAfter -gt $logSizeBefore) {
+                                $patronesEncontrados++
+                            }
                         }
                     }
+                }
+                
+                if ($patronesEncontrados -gt 0) {
+                    Write-InfoLog "Se encontraron patrones en $patronesEncontrados archivo(s)"
+                }
+                else {
+                    Write-InfoLog "No se encontraron patrones sensibles en este commit"
                 }
                 
                 # Actualizar último commit procesado
@@ -318,49 +454,65 @@ function Start-BucleDemonio {
             }
         }
         catch {
-            # Error con git, continuar
+            Write-InfoLog "ERROR en iteración $iteracion : $_"
         }
         finally {
             Pop-Location
         }
         
+        # Dormir por el intervalo configurado
         Start-Sleep -Seconds $Alerta
     }
     
     # Limpieza al salir
+    Write-InfoLog "Demonio detenido"
     Remove-Item $ultimoCommitFile -Force -ErrorAction SilentlyContinue
     Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
 }
 
 # Función para detener el demonio
 function Stop-Demonio {
-    $repoName = Split-Path $Repo -Leaf
-    $lockFile = Join-Path $env:TEMP "audit_daemon_$repoName.lock"
+    $repoId = Get-RepoIdentifier -RepoPath $Repo
+    $lockFile = Join-Path $env:TEMP "audit_daemon_$repoId.lock"
     
     if (-not (Test-Path $lockFile)) {
-        Write-Error "ERROR: No hay demonio corriendo para '$Repo'"
+        Write-Error "ERROR: No hay demonio corriendo para este repositorio"
         exit 1
     }
     
     try {
-        $IdDelProceso = Get-Content $lockFile -ErrorAction Stop
+        $lockData = Get-Content $lockFile -ErrorAction Stop | ConvertFrom-Json
+        $IdDelProceso = $lockData.PID
+        
         $proceso = Get-Process -Id $IdDelProceso -ErrorAction Stop
         
         Write-Host "INFO: Deteniendo demonio (PID: $IdDelProceso)..."
-        $proceso.CloseMainWindow()
+        
+        # Intentar cierre graceful
+        $proceso.CloseMainWindow() | Out-Null
         Start-Sleep -Seconds 2
         
+        # Verificar si sigue corriendo
         if (-not $proceso.HasExited) {
-            $proceso.Kill()
             Write-Host "INFO: Forzando terminación..."
+            $proceso.Kill()
+            Start-Sleep -Seconds 1
         }
-        Write-Host "INFO: Demonio detenido (PID: $IdDelProceso)"
+        
+        Write-Host "INFO: Demonio detenido exitosamente"
+    }
+    catch [Microsoft.PowerShell.Commands.ProcessCommandException] {
+        Write-Host "INFO: El proceso demonio ya no estaba corriendo"
     }
     catch {
-        Write-Host "INFO: Demonio ya no estaba corriendo"
+        Write-Host "INFO: Error al detener demonio, limpiando archivos: $_"
     }
     
+    # Limpiar archivos
     Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
+    
+    $ultimoCommitFile = Join-Path $env:TEMP "audit_ultimo_commit_$repoId.txt"
+    Remove-Item $ultimoCommitFile -Force -ErrorAction SilentlyContinue
 }
 
 # Función principal
@@ -371,7 +523,7 @@ function Main {
             Start-BucleDemonio
         }
         catch {
-            Write-Error "Error en modo demonio: $_"
+            Write-InfoLog "ERROR FATAL en modo demonio: $_"
             exit 1
         }
         return
@@ -390,11 +542,11 @@ function Main {
     }
 }
 
-# Ejecutar función principal
+# Punto de entrada - Ejecutar función principal
 try {
     Main
 }
 catch {
-    Write-Error "Error general: $_"
+    Write-Error "ERROR: $_"
     exit 1
 }
