@@ -15,7 +15,7 @@ Ruta del archivo de configuración con patrones a buscar (OBLIGATORIO)
 Ruta del archivo de logs (OBLIGATORIO)
 
 .PARAMETER Alerta
-Intervalo en segundos (opcional. default 10s)
+Intervalo en segundos (opcional, default 10s)
 
 .PARAMETER Kill
 Flag para detener el demonio
@@ -51,32 +51,25 @@ param(
 
 $script:patrones = @()
 
-# Función para obtener path absoluto de forma portable
+# Función para convertir a ruta absoluta de forma segura
 function Get-AbsolutePath {
     param([string]$Path)
     
-    if ([string]::IsNullOrWhiteSpace($Path)) {
+    if ([string]::IsNullOrEmpty($Path)) { return $Path }
+    
+    # Si ya es absoluto, devolverlo tal cual
+    if ([System.IO.Path]::IsPathRooted($Path)) {
         return $Path
     }
     
-    # Si ya es absoluto (comienza con /)
-    if ($Path.StartsWith('/')) {
-        return $Path
+    # Si es relativo, convertir a absoluto
+    try {
+        $resolved = Resolve-Path $Path -ErrorAction Stop
+        return $resolved.Path
+    } catch {
+        # Si Resolve-Path falla (archivo no existe), construir manualmente
+        return [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path $Path))
     }
-    
-    # Si es relativo, combinarlo con la ubicación actual
-    $currentLocation = Get-Location | Select-Object -ExpandProperty Path
-    
-    # Normalizar el path
-    if ($Path.StartsWith('./')) {
-        $Path = $Path.Substring(2)
-    }
-    
-    # Combinar paths
-    $combined = Join-Path $currentLocation $Path
-    
-    # Normalizar barras
-    return $combined.Replace('\', '/')
 }
 
 function Test-ParametrosObligatorios {
@@ -84,57 +77,60 @@ function Test-ParametrosObligatorios {
         if (-not $Repo) { Write-Error "ERROR: -Kill requiere -Repo"; exit 1 }
         return
     }
+    
     if (-not $Repo) { Write-Error "ERROR: -Repo obligatorio"; Get-Help $PSCommandPath; exit 1 }
     if (-not $Configuracion) { Write-Error "ERROR: -Configuracion obligatorio"; Get-Help $PSCommandPath; exit 1 }
     if (-not $Log) { Write-Error "ERROR: -Log obligatorio"; Get-Help $PSCommandPath; exit 1 }
     
-    # Convertir a paths absolutos
-    $script:Repo = Get-AbsolutePath $Repo
-    $script:Configuracion = Get-AbsolutePath $Configuracion
-    $script:Log = Get-AbsolutePath $Log
-    
-    # Validar Repo
-    if (-not (Test-Path $script:Repo)) {
-        Write-Error "ERROR: El directorio del repositorio '$script:Repo' no existe"
+    # Validar repositorio
+    $repoAbs = Get-AbsolutePath $Repo
+    if (-not (Test-Path $repoAbs -PathType Container)) {
+        Write-Error "ERROR: El directorio del repositorio '$repoAbs' no existe"
+        exit 1
+    }
+    if (-not (Test-Path (Join-Path $repoAbs ".git"))) {
+        Write-Error "ERROR: '$repoAbs' no es un repositorio Git válido"
         exit 1
     }
     
-    # Validar Configuracion
-    if (-not (Test-Path $script:Configuracion)) {
-        Write-Error "ERROR: El archivo de configuración '$script:Configuracion' no existe"
+    # Validar configuración
+    $configAbs = Get-AbsolutePath $Configuracion
+    if (-not (Test-Path $configAbs -PathType Leaf)) {
+        Write-Error "ERROR: El archivo de configuración '$configAbs' no existe"
         exit 1
     }
     
-    # Crear Log si no existe
+    # Validar log
     try {
-        $logDir = Split-Path $script:Log -Parent
+        $logAbs = Get-AbsolutePath $Log
+        $logDir = Split-Path $logAbs -Parent
         if ($logDir -and -not (Test-Path $logDir)) {
             New-Item -Path $logDir -ItemType Directory -Force | Out-Null
         }
-        if (-not (Test-Path $script:Log)) {
-            New-Item -Path $script:Log -ItemType File -Force | Out-Null
+        if (-not (Test-Path $logAbs)) {
+            New-Item -Path $logAbs -ItemType File -Force | Out-Null
         }
-        Add-Content -Path $script:Log -Value "" -ErrorAction Stop
+        Add-Content -Path $logAbs -Value "" -ErrorAction Stop
     } catch {
-        Write-Error "ERROR: No se puede escribir en log '$script:Log'"
+        Write-Error "ERROR: No se puede escribir en log '$logAbs': $_"
         exit 1
     }
 }
 
 function Read-Patrones {
     $script:patrones = @()
+    $configAbs = Get-AbsolutePath $Configuracion
+    
     try {
-        $configPath = Get-AbsolutePath $Configuracion
-        
-        if (-not (Test-Path $configPath)) {
-            throw "El archivo de configuración '$configPath' no existe"
-        }
-        
-        Get-Content $configPath | ForEach-Object {
+        Get-Content $configAbs -ErrorAction Stop | ForEach-Object {
             $line = $_.Trim()
-            if ($line -and !$line.StartsWith("#")) { $script:patrones += $line }
+            if ($line -and !$line.StartsWith("#")) {
+                $script:patrones += $line
+            }
         }
-        if ($script:patrones.Count -eq 0) { throw "Sin patrones válidos" }
+        if ($script:patrones.Count -eq 0) {
+            throw "Sin patrones válidos"
+        }
     } catch {
         Write-Error "ERROR: No se puede leer configuración: $_"
         exit 1
@@ -145,7 +141,8 @@ function Write-AlertaLog {
     param([string]$Patron, [string]$Archivo)
     $fecha = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $mensaje = "[$fecha] Alerta: patrón '$Patron' encontrado en '$Archivo'"
-    Add-Content -Path $Log -Value $mensaje -ErrorAction SilentlyContinue
+    $logAbs = Get-AbsolutePath $Log
+    Add-Content -Path $logAbs -Value $mensaje -ErrorAction SilentlyContinue
 }
 
 function Search-PatronesEnArchivo {
@@ -171,7 +168,9 @@ function Search-PatronesEnArchivo {
                 if ($contenido -match "(?i)$patronEscapado") { $encontrado = $true }
             }
             
-            if ($encontrado) { Write-AlertaLog -Patron $patron -Archivo $nombreArchivo }
+            if ($encontrado) {
+                Write-AlertaLog -Patron $patron -Archivo $nombreArchivo
+            }
         }
     } catch { }
 }
@@ -185,38 +184,28 @@ function Get-RepoIdentifier {
     return [System.BitConverter]::ToString($hashBytes).Replace("-", "").Substring(0, 16)
 }
 
-function Get-TempDirectory {
-    # Intentar obtener el directorio temporal de forma portable
-    $tempDir = $env:TMPDIR
-    if (-not $tempDir) { $tempDir = $env:TEMP }
-    if (-not $tempDir) { $tempDir = $env:TMP }
-    if (-not $tempDir) { $tempDir = "/tmp" }
-    
-    return $tempDir
-}
-
 function Start-Demonio {
     $repoId = Get-RepoIdentifier -RepoPath $Repo
-    $tempDir = Get-TempDirectory
-    $lockFile = Join-Path $tempDir "audit_daemon_$repoId.lock"
+    $lockFile = Join-Path $env:TEMP "audit_daemon_$repoId.lock"
     
     if (Test-Path $lockFile) {
         try {
             $pidData = Get-Content $lockFile | ConvertFrom-Json
             $proceso = Get-Process -Id $pidData.PID -ErrorAction Stop
-            Write-Error "ERROR: Demonio ya corriendo (PID: $($pidData.PID))"
-            exit 1
+            Write-Error "ERROR: Demonio ya corriendo (PID: $($pidData.PID))"; exit 1
         } catch {
             Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
         }
     }
     
+    # Convertir todas las rutas a absolutas de forma segura
     $RepoAbs = Get-AbsolutePath $Repo
     $ConfigAbs = Get-AbsolutePath $Configuracion
     $LogAbs = Get-AbsolutePath $Log
     
     $argumentos = @(
         "-NoProfile"
+        "-WindowStyle", "Hidden"
         "-ExecutionPolicy", "Bypass"
         "-File", "`"$PSCommandPath`""
         "-Repo", "`"$RepoAbs`""
@@ -227,8 +216,9 @@ function Start-Demonio {
     )
     
     try {
-        $proceso = Start-Process -FilePath "pwsh" `
+        $proceso = Start-Process -FilePath "powershell.exe" `
                                  -ArgumentList $argumentos `
+                                 -WindowStyle Hidden `
                                  -PassThru `
                                  -ErrorAction Stop
         
@@ -238,25 +228,25 @@ function Start-Demonio {
             ConvertTo-Json | Set-Content $lockFile
         
         Write-Host "INFO: Demonio iniciado (PID: $processId)"
-        Write-Host "INFO: Para detener: ./4demonio.ps1 -Repo `"$Repo`" -Kill"
+        Write-Host "INFO: Para detener: .\4demonio.ps1 -Repo `"$Repo`" -Kill"
     } catch {
-        Write-Error "ERROR: No se pudo iniciar demonio: $_"
-        exit 1
+        Write-Error "ERROR: No se pudo iniciar demonio: $_"; exit 1
     }
 }
 
 function Start-BucleDemonio {
     $repoId = Get-RepoIdentifier -RepoPath $Repo
-    $tempDir = Get-TempDirectory
-    $lockFile = Join-Path $tempDir "audit_daemon_$repoId.lock"
-    $commitFile = Join-Path $tempDir "audit_commit_$repoId.txt"
+    $lockFile = Join-Path $env:TEMP "audit_daemon_$repoId.lock"
+    $commitFile = Join-Path $env:TEMP "audit_commit_$repoId.txt"
     
     @{ PID = $PID; Repo = $Repo; Started = (Get-Date -Format "yyyy-MM-dd HH:mm:ss") } |
         ConvertTo-Json | Set-Content $lockFile
     
     Read-Patrones
     
-    Push-Location $Repo
+    $repoAbs = Get-AbsolutePath $Repo
+    
+    Push-Location $repoAbs
     $ultimoCommit = (git rev-parse HEAD 2>$null)
     if (-not $ultimoCommit) { $ultimoCommit = "EMPTY" }
     Pop-Location
@@ -265,7 +255,7 @@ function Start-BucleDemonio {
     
     while (Test-Path $lockFile) {
         try {
-            Push-Location $Repo
+            Push-Location $repoAbs
             $commitActual = (git rev-parse HEAD 2>$null)
             if (-not $commitActual) { $commitActual = "EMPTY" }
             
@@ -273,14 +263,18 @@ function Start-BucleDemonio {
                 $archivos = @()
                 if ($ultimoCommit -ne "EMPTY") {
                     $diff = git diff --name-only $ultimoCommit $commitActual 2>$null
-                    if ($diff) { $archivos = $diff -split "`n" | Where-Object { $_.Trim() } }
+                    if ($diff) {
+                        $archivos = $diff -split "`n" | Where-Object { $_.Trim() }
+                    }
                 } else {
                     $ls = git ls-tree -r --name-only HEAD 2>$null
-                    if ($ls) { $archivos = $ls -split "`n" | Where-Object { $_.Trim() } }
+                    if ($ls) {
+                        $archivos = $ls -split "`n" | Where-Object { $_.Trim() }
+                    }
                 }
                 
                 foreach ($archivo in $archivos) {
-                    $path = Join-Path $Repo $archivo
+                    $path = Join-Path $repoAbs $archivo
                     if (Test-Path $path -PathType Leaf) {
                         Search-PatronesEnArchivo -ArchivoPath $path
                     }
@@ -302,8 +296,7 @@ function Start-BucleDemonio {
 
 function Stop-Demonio {
     $repoId = Get-RepoIdentifier -RepoPath $Repo
-    $tempDir = Get-TempDirectory
-    $lockFile = Join-Path $tempDir "audit_daemon_$repoId.lock"
+    $lockFile = Join-Path $env:TEMP "audit_daemon_$repoId.lock"
     
     if (-not (Test-Path $lockFile)) {
         Write-Error "ERROR: No hay demonio corriendo"
@@ -320,6 +313,9 @@ function Stop-Demonio {
     }
     
     Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
+    
+    $commitFile = Join-Path $env:TEMP "audit_commit_$repoId.txt"
+    Remove-Item $commitFile -Force -ErrorAction SilentlyContinue
 }
 
 # MAIN
