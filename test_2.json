@@ -1,0 +1,13 @@
+{
+    database: {
+        password: secret123
+    },
+    api: {
+        API_KEY: abc123def456,
+        secret: my_secret_token
+    },
+    auth: {
+        token: auth_token_123,
+        database_password: db_secret
+    }
+}
