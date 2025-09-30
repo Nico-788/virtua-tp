@@ -77,7 +77,18 @@ CACHE_FILE="$DIRECTORY_SCRIPT"/.tmp/paises.cache
 
 IFS=',' read -ra paisesABuscar <<< "$NOMBRES_PAISES"
 
-# Función para limpiar cache vencida (solo si TTL > 0)
+TMPFILE=""
+
+function limpiar_temporal() {
+    if [ -f "$TMPFILE" ]; then
+        echo "Señal recibida: eliminando archivo temporal $TMPFILE"
+        rm -f "$TMPFILE"
+    fi
+    exit 1
+}
+trap limpiar_temporal SIGINT SIGTERM
+
+# Función para limpiar cache vencida
 function limpiar_cache() {
     if [ -f "$CACHE_FILE" ]; then
         tmpfile=$(mktemp)
@@ -94,7 +105,6 @@ function limpiar_cache() {
         fi
     fi
 }
-
 limpiar_cache
 
 # Buscar en cache primero (TTL opcional)
@@ -117,6 +127,7 @@ if [ -f "$CACHE_FILE" ]; then
     done < "$CACHE_FILE"
 fi
 
+# Buscar en API los paises restantes
 for pais in "${paisesABuscar[@]}"; do
     echo -e "\nBuscando en API: $pais\n"
     pais=$(echo -n "$pais" | jq -sRr @uri)
