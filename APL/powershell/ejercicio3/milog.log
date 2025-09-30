@@ -1,0 +1,3 @@
+Aug 23 10:00:10 server.local sudo[5678]: Command not found.
+Aug 23 10:00:15 server.local kernel: [258.123] USB device unplugged.
+Aug 23 10:00:20 server.local sshd[1234]: Invalid user from 192.168.1.2.

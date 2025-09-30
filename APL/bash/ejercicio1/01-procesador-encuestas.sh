@@ -18,8 +18,7 @@ function ayuda() {
 }
 
 options=$(getopt -o d:a:ph --l help,pantalla,archivo:,directorio: -- "$@" 2> /dev/null)
-if [ "$?" != "0" ]
-then
+if [[ "$?" != "0" ]]; then
     echo 'Opciones incorrectas.'
     echo "Utilice -h o --help para ayuda"
     exit 1
@@ -27,12 +26,13 @@ fi
 
 eval set -- "$options"
 
+HELP=false
 DIR=""
 ARCHDEST=""
 PANT=false
+AWK_SCRIPT="procesador-entrada.awk"
 
-while true
-do
+while true; do
     case "$1" in
         -d | --directorio)
             DIR="$2"
@@ -54,47 +54,45 @@ do
             break
             ;;
         *)
-            echo error
+            echo "Error: opción no reconocida"
             exit 1
             ;;
     esac
 done
 
-if [ "$HELP" = true ]
-then
+if [[ "$HELP" = true ]]; then
     ayuda
     exit 0
 fi
 
-if [[ -z "$DIR" || ! -d "$DIR" ]] 
-then
+if [[ -z "$DIR" || ! -d "$DIR" ]]; then
     echo "Error: El directorio $DIR no existe o no es un directorio"
     exit 1
 fi
 
-if [ -n "$ARCHDEST" ]
-then
-    if [[ "$ARCHDEST" == *.json ]]
-    then
-        if [ "$PANT" = false ]
-        then
-            awk -f procesador-entrada.awk "$DIR"/*.txt > "$ARCHDEST"
-        else
-            echo "Error: No es posible imprimir por pantalla y guardar en archivo al mismo tiempo"
-            exit 1
-        fi
-    else
-        echo "Error: Ruta destino erronea"
-        exit 1
-    fi
+# Verificamos que no se usen -a y -p al mismo tiempo
+if [[ -n "$ARCHDEST" && "$PANT" = true ]]; then
+    echo "Error: No es posible imprimir por pantalla y guardar en archivo al mismo tiempo"
+    exit 1
 fi
 
-if [ "$PANT" = true ]
-then
-    if [ -z "$ARCHDEST" ]
-    then
-        awk -f procesador-entrada.awk "$DIR"/*.txt
+# Revisamos que haya archivos .txt
+shopt -s nullglob
+files=("$DIR"/*.txt)
+# ${#files[@]} es la cantidad de elementos que tiene el array
+if [[ ${#files[@]} -eq 0 ]]; then
+    echo "Error: No se encontraron archivos .txt en $DIR"
+    exit 1
+fi
+
+# Procesamiento de salida
+if [[ -n "$ARCHDEST" ]]; then
+    if [[ "$ARCHDEST" == *.json ]]; then
+        awk -f "$AWK_SCRIPT" "${files[@]}" > "$ARCHDEST"
     else
-        echo "Error: No es posible imprimir por pantalla y guardar en archivo al mismo tiempo"
+        echo "Error: El archivo de salida debe tener extensión .json"
+        exit 1
     fi
+elif [[ "$PANT" = true ]]; then
+    awk -f "$AWK_SCRIPT" "${files[@]}"
 fi
