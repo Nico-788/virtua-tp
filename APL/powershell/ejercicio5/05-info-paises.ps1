@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Consulta información de uno o varios países utilizando la API:
-        https://restcountries.com/v3.1/name/{nombre}
+        https://restcountries.com/v3.1/translation/{nombre}
 
     Si se especifica el parámetro -ttl:
         - Se guarda en un archivo cachePaises.json el resultado de la API con un tiempo de vida.
