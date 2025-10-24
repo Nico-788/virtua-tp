@@ -23,7 +23,7 @@ function ayuda() {
     echo -e "\t\tSeparador de columnas (default: |)"
 }
 
-options=$(getopt -o m:c:s:hu --l help,matriz:,camino:,separador:,hub -- "$@" 2> /dev/null)
+options=$(getopt -o m:cs:hu --l help,matriz:,camino,separador:,hub -- "$@" 2> /dev/null)
 if [ "$?" != "0" ]
 then
     echo 'Opciones incorrectas.'
@@ -63,9 +63,7 @@ while true; do
                 exit 1
             fi
             camino="true"
-            nodoInicioRecorrido=$(echo "$2" | cut -d',' -f1)
-            nodoFinRecorrido=$(echo "$2" | cut -d',' -f2)
-            shift 2
+            shift 1
             ;;
         -s|--separador)
             separador="$2"        
@@ -168,44 +166,81 @@ fi
 # INICIALIZACIÓN DE VECTORES PARA DIJKSTRA
 # -----------------------------
 dijkstra() {
-    local start=$((nodoInicioRecorrido-1)) 
-    local end=$((nodoFinRecorrido-1))
+    # Inicializar matrices de distancia y camino
+    declare -A dist
+    declare -A next
+    
+    # Copiar la matriz de adyacencia a dist
     for ((i=0; i<cantNodos; i++)); do
-        dist[$i]=999999; prev[$i]=-1; visitado[$i]=0
-    done
-    dist[$start]=0
-
-    for ((c=0; c<cantNodos; c++)); do
-        min=999999; u=-1
-        for ((i=0; i<cantNodos; i++)); do
-            if (( visitado[i]==0 && dist[i]<min )); then
-                min=${dist[$i]}; u=$i
+        for ((j=0; j<cantNodos; j++)); do
+            if [[ $i -eq $j ]]; then
+                dist[$i,$j]=0
+            elif [[ "${matriz[$i,$j]}" == "0" ]]; then
+                dist[$i,$j]=999999  # Infinito
+                next[$i,$j]=-1
+            else
+                dist[$i,$j]="${matriz[$i,$j]}"
+                next[$i,$j]=$j
             fi
         done
-        [[ $u -eq -1 ]] && break
-        visitado[$u]=1
-
-        for ((v=0; v<cantNodos; v++)); do
-            peso=${matriz[$u,$v]}
-            if (( peso > 0 )); then
-                if (( dist[$u] + peso < dist[$v] )); then
-                    dist[$v]=$((dist[$u] + peso))
-                    prev[$v]=$u
+    done
+    
+    # Realizo los calculos de distancias mínimas
+    for ((k=0; k<cantNodos; k++)); do
+        for ((i=0; i<cantNodos; i++)); do
+            for ((j=0; j<cantNodos; j++)); do
+                suma=$(echo "${dist[$i,$k]} + ${dist[$k,$j]}" | bc)
+                if (( $(echo "$suma < ${dist[$i,$j]}" | bc -l) )); then
+                    dist[$i,$j]=$suma
+                    next[$i,$j]=${next[$i,$k]}
+                fi
+            done
+        done
+    done
+    
+    # Encontrar el camino más corto de todos
+    min_dist=999999
+    for ((i=0; i<cantNodos; i++)); do
+        for ((j=i+1; j<cantNodos; j++)); do
+            if [[ ${next[$i,$j]} -ne -1 ]]; then
+                if (( $(echo "${dist[$i,$j]} < $min_dist" | bc -l) )); then
+                    min_dist=${dist[$i,$j]}
                 fi
             fi
         done
     done
-
-    ruta=()
-    u=$end
-    while [[ $u -ne -1 ]]; do
-        ruta=($((u+1)) "${ruta[@]}")
-        u=${prev[$u]}
+    
+    # Generar informe solo con los caminos de distancia mínima
+    echo "## Informe de análisis de red de transporte"
+    echo ""
+    echo "**Camino/s más corto/s: **"
+    
+    for ((i=0; i<cantNodos; i++)); do
+        for ((j=i+1; j<cantNodos; j++)); do
+            if [[ ${next[$i,$j]} -ne -1 ]]; then
+                # Solo mostrar si la distancia es igual a la mínima
+                # Si hay varios caminos con la misma distancia mínima, se muestran todos
+                if (( $(echo "${dist[$i,$j]} == $min_dist" | bc -l) )); then
+                    origen=$((i+1))
+                    destino=$((j+1))
+                    
+                    echo -e "\t**Entre Estación $origen y Estación $destino:**"
+                    
+                    # Reconstruir el camino
+                    ruta="$origen"
+                    actual=$i
+                    while [[ $actual -ne $j ]]; do
+                        actual=${next[$actual,$j]}
+                        ruta="$ruta -> $((actual+1))"
+                    done
+                    
+                    echo -e "\t**Tiempo total:** ${dist[$i,$j]} minutos"
+                    echo -e "\t**Ruta:** $ruta"
+                    echo ""
+                fi
+            fi
+        done
     done
-
-    echo "**Camino más corto: entre Estación $nodoInicioRecorrido y Estación $nodoFinRecorrido:**"
-    echo "**Tiempo total:** ${dist[$end]} minutos"
-    echo "**Ruta:** ${ruta[*]} " | sed 's/ / -> /g'
 }
 
 if [ "$camino" = true ]; then
