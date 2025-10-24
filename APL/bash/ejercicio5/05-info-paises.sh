@@ -77,16 +77,19 @@ CACHE_FILE="$DIRECTORY_SCRIPT"/.tmp/paises.cache
 
 IFS=',' read -ra paisesABuscar <<< "$NOMBRES_PAISES"
 
-TMPFILE=""
 
-function limpiar_temporal() {
-    if [ -f "$TMPFILE" ]; then
-        echo "Señal recibida: eliminando archivo temporal $TMPFILE"
-        rm -f "$TMPFILE"
+function limpiar_completa() {
+    echo -e "\n\nInterrupción detectada. Limpiando todos los recursos..."
+    
+    # Eliminar archivos temporales
+    rm -f "$tmp_cache" "$tmpfile" 2>/dev/null
+    
+    # Eliminar directorio de caché si está vacío
+    if [ ! -s "$CACHE_FILE" ]; then
+        rm -r "$DIRECTORY_SCRIPT"/.tmp 2>/dev/null
     fi
-    exit 1
 }
-trap limpiar_temporal SIGINT SIGTERM
+trap limpiar_completa SIGINT SIGTERM
 
 # Función para limpiar cache vencida
 function limpiar_cache() {
@@ -94,7 +97,7 @@ function limpiar_cache() {
         tmpfile=$(mktemp)
         now=$(date +%s)
         while IFS= read -r linea; do
-            timestamp="$(echo "$linea" | awk -F'|' '{print $4}')"
+            timestamp="$(echo "$linea" | awk -F'|' '{print $6}')"
             if [[ "$timestamp" =~ ^[0-9]+$ ]] && (( now - timestamp <= 0 )); then
                 echo "$linea" >> "$tmpfile"
             fi
@@ -110,21 +113,49 @@ limpiar_cache
 # Buscar en cache primero (TTL opcional)
 if [ -f "$CACHE_FILE" ]; then
     tmpPaises=("${paisesABuscar[@]}")
+    # Crear archivo temporal para las actualizaciones
+    tmp_cache=$(mktemp)
+    
     while IFS= read -r linea; do
         info="${linea%|*}"
+        linea_modificada=false
+        
         for i in "${!tmpPaises[@]}"; do
             currentPais="${tmpPaises[i]}"
             if echo "$info" | grep -qi "$currentPais"; then
-                ttl_arch="$(echo "$info" | awk -F'|' '{print $4}')"
+                ttl_arch="$(echo "$info" | awk -F'|' '{print $6}')"
                 result_ttl=$(( $(date +%s) - ttl_arch ))
+                
                 if [ "$result_ttl" -lt 0 ]; then
                     echo -e "\nBuscando en CACHE: $currentPais\n"
-                    echo "$info" | awk -F'|' '{printf "%s\n%s\n%s\n", $1, $2, $3}'
+                    echo "$info" | awk -F'|' '{printf "%s\n%s\n%s\n%s\n%s\n", $1, $2, $3, $4, $5}'
                     unset 'paisesABuscar[i]'
+                    
+                    # Actualizar TTL si el parámetro es mayor a 0
+                    if [ "$TTL_CACHE" -gt 0 ]; then
+                        nuevo_ttl=$(( $(date +%s) + TTL_CACHE ))
+                        # Reemplazar el TTL antiguo con el nuevo
+                        nueva_linea=$(echo "$info" | awk -F'|' -v new_ttl="$nuevo_ttl" '{printf "%s|%s|%s|%s|%s|%d|\n", $1, $2, $3, $4, $5, new_ttl}')
+                        echo "$nueva_linea" >> "$tmp_cache"
+                        linea_modificada=true
+                    fi
                 fi
             fi
         done
+        
+        # Si no se modificó la línea, copiarla tal cual
+        if [ "$linea_modificada" = false ]; then
+            echo "$linea" >> "$tmp_cache"
+        fi
+        
     done < "$CACHE_FILE"
+    
+    # Reemplazar el archivo original con el actualizado
+    if [ "$TTL_CACHE" -gt 0 ]; then
+        mv "$tmp_cache" "$CACHE_FILE"
+    else
+        rm -f "$tmp_cache"
+    fi
 fi
 
 # Buscar en API los paises restantes
@@ -134,14 +165,20 @@ for pais in "${paisesABuscar[@]}"; do
     resp=$(curl -s "$BASE_URL""$pais")
 
     if echo "$resp" | jq -e 'type=="array"' >/dev/null; then
-        resultadoCurl="$(echo "$resp" | jq -r '.[] | "Pais: \(.translations.spa.common)|Capital: \((.capital | join(", ")))|Moneda: \((.currencies | keys | join(", ")))"')"
+        resultadoCurl="$(echo "$resp" | jq -r '.[] | "Pais: \(.translations.spa.common)|Capital: \((.capital | join(", ")))|Region: \(.region)|Poblacion: \(.population)|Moneda: \((.currencies | to_entries[] | "\(.value.name) (\(.key))") )"')"
 
         if [ "$TTL_CACHE" -gt 0 ]; then
             ttl_arch=$(( $(date +%s) + TTL_CACHE ))
-            echo "$resultadoCurl|$ttl_arch|" >> "$CACHE_FILE"
+            if [ ! -d "$DIRECTORY_SCRIPT"/.tmp ]; then
+                mkdir -p "$DIRECTORY_SCRIPT"/.tmp
+            fi
+            echo "$resultadoCurl|$ttl_arch|" >> "$CACHE_FILE"       
         fi
+        # Esto ocurre ya que siempre se incia el script limpiando caché
+        # Si entre el momento que limpia y consulta en caché, el TTL se venció, no lo va a borrar. Por lo tanto, lo limpiamos acá. 
+        limpiar_cache
 
-        echo "$resultadoCurl" | awk -F'|' '{printf "%s\n%s\n%s\n", $1, $2, $3}'
+        echo "$resultadoCurl" | awk -F'|' '{printf "%s\n%s\n%s\n%s\n%s\n", $1, $2, $3, $4, $5}'
         echo ""
     else
         echo -e "Error: No se encontro el pais: $pais.\nConsulte en otro idioma o compruebe que este escrito correctamente\n"
