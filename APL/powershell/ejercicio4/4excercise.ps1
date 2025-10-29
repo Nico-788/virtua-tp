@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-Demonio para monitorear credenciales en repositorios Git
+Demonio para monitorear credenciales en directorios
 
 .DESCRIPTION
-Script demonio para monitorear un repositorio Git y detectar credenciales o datos sensibles.
+Script demonio para monitorear un directorio y detectar credenciales o datos sensibles.
 
 .PARAMETER Repo
-Ruta del repositorio Git a monitorear (OBLIGATORIO)
+Ruta del directorio a monitorear (OBLIGATORIO)
 
 .PARAMETER Configuracion
 Ruta del archivo de configuración con patrones a buscar (OBLIGATORIO)
@@ -82,14 +82,10 @@ function Test-ParametrosObligatorios {
     if (-not $Configuracion) { Write-Error "ERROR: -Configuracion obligatorio"; Get-Help $PSCommandPath; exit 1 }
     if (-not $Log) { Write-Error "ERROR: -Log obligatorio"; Get-Help $PSCommandPath; exit 1 }
     
-    # Validar repositorio
+    # Validar directorio (SIN validar que sea repositorio Git)
     $repoAbs = Get-AbsolutePath $Repo
     if (-not (Test-Path $repoAbs -PathType Container)) {
-        Write-Error "ERROR: El directorio del repositorio '$repoAbs' no existe"
-        exit 1
-    }
-    if (-not (Test-Path (Join-Path $repoAbs ".git"))) {
-        Write-Error "ERROR: '$repoAbs' no es un repositorio Git válido"
+        Write-Error "ERROR: El directorio '$repoAbs' no existe"
         exit 1
     }
     
@@ -140,7 +136,7 @@ function Read-Patrones {
 function Write-AlertaLog {
     param([string]$Patron, [string]$Archivo)
     $fecha = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $mensaje = "[$fecha] Alerta: patrón '$Patron' encontrado en '$Archivo'"
+    $mensaje = "[$fecha] Alerta: patrón '$Patron' encontrado en el archivo '$Archivo'."
     $logAbs = Get-AbsolutePath $Log
     Add-Content -Path $logAbs -Value $mensaje -ErrorAction SilentlyContinue
 }
@@ -148,7 +144,7 @@ function Write-AlertaLog {
 function Search-PatronesEnArchivo {
     param([string]$ArchivoPath)
     
-    if (-not (Test-Path $ArchivoPath)) { return }
+    if (-not (Test-Path $ArchivoPath -PathType Leaf)) { return }
     $nombreArchivo = Split-Path $ArchivoPath -Leaf
     
     try {
@@ -184,9 +180,24 @@ function Get-RepoIdentifier {
     return [System.BitConverter]::ToString($hashBytes).Replace("-", "").Substring(0, 16)
 }
 
+function Get-DirectorySnapshot {
+    param([string]$Path)
+    
+    $snapshot = @{}
+    Get-ChildItem -Path $Path -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            $snapshot[$_.FullName] = $_.LastWriteTime
+        } catch { }
+    }
+    return $snapshot
+}
+
 function Start-Demonio {
     $repoId = Get-RepoIdentifier -RepoPath $Repo
-    $lockFile = Join-Path $env:TEMP "audit_daemon_$repoId.lock"
+    
+    # Obtener directorio temporal correcto (funciona en Linux y Windows)
+    $tempDir = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
+    $lockFile = Join-Path $tempDir "audit_daemon_$repoId.lock"
     
     if (Test-Path $lockFile) {
         try {
@@ -205,7 +216,6 @@ function Start-Demonio {
     
     $argumentos = @(
         "-NoProfile"
-        "-WindowStyle", "Hidden"
         "-ExecutionPolicy", "Bypass"
         "-File", "`"$PSCommandPath`""
         "-Repo", "`"$RepoAbs`""
@@ -216,9 +226,9 @@ function Start-Demonio {
     )
     
     try {
-        $proceso = Start-Process -FilePath "powershell.exe" `
+        # Iniciar proceso SIN WindowStyle (compatible con Linux)
+        $proceso = Start-Process -FilePath "pwsh" `
                                  -ArgumentList $argumentos `
-                                 -WindowStyle Hidden `
                                  -PassThru `
                                  -ErrorAction Stop
         
@@ -228,7 +238,8 @@ function Start-Demonio {
             ConvertTo-Json | Set-Content $lockFile
         
         Write-Host "INFO: Demonio iniciado (PID: $processId)"
-        Write-Host "INFO: Para detener: .\4demonio.ps1 -Repo `"$Repo`" -Kill"
+        Write-Host "INFO: Monitoreando directorio: $RepoAbs"
+        Write-Host "INFO: Para detener: pwsh $PSCommandPath -Repo `"$Repo`" -Kill"
     } catch {
         Write-Error "ERROR: No se pudo iniciar demonio: $_"; exit 1
     }
@@ -236,8 +247,8 @@ function Start-Demonio {
 
 function Start-BucleDemonio {
     $repoId = Get-RepoIdentifier -RepoPath $Repo
-    $lockFile = Join-Path $env:TEMP "audit_daemon_$repoId.lock"
-    $commitFile = Join-Path $env:TEMP "audit_commit_$repoId.txt"
+    $tempDir = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
+    $lockFile = Join-Path $tempDir "audit_daemon_$repoId.lock"
     
     @{ PID = $PID; Repo = $Repo; Started = (Get-Date -Format "yyyy-MM-dd HH:mm:ss") } |
         ConvertTo-Json | Set-Content $lockFile
@@ -246,60 +257,54 @@ function Start-BucleDemonio {
     
     $repoAbs = Get-AbsolutePath $Repo
     
-    Push-Location $repoAbs
-    $ultimoCommit = (git rev-parse HEAD 2>$null)
-    if (-not $ultimoCommit) { $ultimoCommit = "EMPTY" }
-    Pop-Location
-    
-    Set-Content $commitFile -Value $ultimoCommit
+    # Tomar snapshot inicial
+    $snapshotAnterior = Get-DirectorySnapshot -Path $repoAbs
     
     while (Test-Path $lockFile) {
         try {
-            Push-Location $repoAbs
-            $commitActual = (git rev-parse HEAD 2>$null)
-            if (-not $commitActual) { $commitActual = "EMPTY" }
+            Start-Sleep -Seconds $Alerta
             
-            if ($commitActual -ne "EMPTY" -and $commitActual -ne $ultimoCommit) {
-                $archivos = @()
-                if ($ultimoCommit -ne "EMPTY") {
-                    $diff = git diff --name-only $ultimoCommit $commitActual 2>$null
-                    if ($diff) {
-                        $archivos = $diff -split "`n" | Where-Object { $_.Trim() }
-                    }
-                } else {
-                    $ls = git ls-tree -r --name-only HEAD 2>$null
-                    if ($ls) {
-                        $archivos = $ls -split "`n" | Where-Object { $_.Trim() }
-                    }
+            # Tomar nuevo snapshot
+            $snapshotActual = Get-DirectorySnapshot -Path $repoAbs
+            
+            # Detectar archivos nuevos o modificados
+            $archivosModificados = @()
+            
+            foreach ($archivo in $snapshotActual.Keys) {
+                if (-not $snapshotAnterior.ContainsKey($archivo)) {
+                    # Archivo nuevo
+                    $archivosModificados += $archivo
+                } elseif ($snapshotActual[$archivo] -ne $snapshotAnterior[$archivo]) {
+                    # Archivo modificado
+                    $archivosModificados += $archivo
                 }
-                
-                foreach ($archivo in $archivos) {
-                    $path = Join-Path $repoAbs $archivo
-                    if (Test-Path $path -PathType Leaf) {
-                        Search-PatronesEnArchivo -ArchivoPath $path
-                    }
-                }
-                
-                Set-Content $commitFile -Value $commitActual
-                $ultimoCommit = $commitActual
             }
-            Pop-Location
+            
+            # Analizar archivos modificados
+            if ($archivosModificados.Count -gt 0) {
+                foreach ($archivo in $archivosModificados) {
+                    if (Test-Path $archivo -PathType Leaf) {
+                        Search-PatronesEnArchivo -ArchivoPath $archivo
+                    }
+                }
+            }
+            
+            # Actualizar snapshot
+            $snapshotAnterior = $snapshotActual
+            
         } catch {
-            Pop-Location
+            # Continuar en caso de error
         }
-        
-        Start-Sleep -Seconds $Alerta
     }
-    
-    Remove-Item $commitFile -Force -ErrorAction SilentlyContinue
 }
 
 function Stop-Demonio {
     $repoId = Get-RepoIdentifier -RepoPath $Repo
-    $lockFile = Join-Path $env:TEMP "audit_daemon_$repoId.lock"
+    $tempDir = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
+    $lockFile = Join-Path $tempDir "audit_daemon_$repoId.lock"
     
     if (-not (Test-Path $lockFile)) {
-        Write-Error "ERROR: No hay demonio corriendo"
+        Write-Error "ERROR: No hay demonio corriendo para este directorio"
         exit 1
     }
     
@@ -313,9 +318,6 @@ function Stop-Demonio {
     }
     
     Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
-    
-    $commitFile = Join-Path $env:TEMP "audit_commit_$repoId.txt"
-    Remove-Item $commitFile -Force -ErrorAction SilentlyContinue
 }
 
 # MAIN
