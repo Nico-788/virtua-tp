@@ -1,1 +1,2 @@
-**Hub de la red:** Estación 2 (3 conexiones)
+## Informe de análisis de red de transporte
+
