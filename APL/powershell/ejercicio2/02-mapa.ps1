@@ -19,8 +19,7 @@
     Obligatorio en el conjunto de parámetros HubTrue.
 
 .PARAMETER camino
-    Especifica las estaciones de inicio y fin para calcular el camino más corto.
-    Se pasan como un array de 2 enteros, por ejemplo: -camino 1,4
+    Opción para determinar el camino más corto.
     Obligatorio en el conjunto de parámetros CaminoTrue.
 
 .PARAMETER separador

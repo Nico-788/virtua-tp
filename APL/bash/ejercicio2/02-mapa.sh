@@ -17,8 +17,8 @@ function ayuda() {
     echo -e "\t\tRuta del archivo con la matriz."
     echo -e "\n\t\e[1m-h, --hub\e[0m"
     echo -e "\t\tCalcula el hub de la red (estación con más conexiones)."
-    echo -e "\n\t\e[1m-c, --camino=INICIO,FIN\e[0m"
-    echo -e "\t\tCalcula el camino más corto entre dos estaciones usando Dijkstra."
+    echo -e "\n\t\e[1m-c, --camino\e[0m"
+    echo -e "\t\tCalcula el camino más corto usando Dijkstra."
     echo -e "\n\t\e[1m-s, --separador SEP\e[0m"
     echo -e "\t\tSeparador de columnas (default: |)"
 }
