@@ -2,3 +2,26 @@
 [2025-09-11 00:49:17] Info: demonio iniciado (PID 3882).
 [2025-09-11 00:54:51] Info: demonio iniciado (PID 5420).
 [2025-09-11 00:56:41] Info: demonio iniciado (PID 5938).
+
+[2025-11-28 15:28:13] Alerta: patrón 'password' encontrado en el archivo 'add.txt'.
+[2025-11-28 15:28:13] Alerta: patrón 'API_KEY' encontrado en el archivo 'add.txt'.
+[2025-11-28 15:28:13] Alerta: patrón 'Distancia' encontrado en el archivo 'add.txt'.
+[2025-11-28 15:28:13] Alerta: patrón 'regex:.*palabra.*' encontrado en el archivo 'add.txt'.
+
+[2025-11-28 15:30:39] Alerta: patrón 'password' encontrado en el archivo 'add.txt'.
+[2025-11-28 15:30:39] Alerta: patrón 'API_KEY' encontrado en el archivo 'add.txt'.
+[2025-11-28 15:30:39] Alerta: patrón 'secret' encontrado en el archivo 'add.txt'.
+[2025-11-28 15:30:39] Alerta: patrón 'Distancia' encontrado en el archivo 'add.txt'.
+[2025-11-28 15:30:39] Alerta: patrón 'regex:.*palabra.*' encontrado en el archivo 'add.txt'.
+[2025-11-28 15:30:39] Alerta: patrón 'password' encontrado en el archivo 'add.txt'.
+[2025-11-28 15:30:39] Alerta: patrón 'API_KEY' encontrado en el archivo 'add.txt'.
+[2025-11-28 15:30:39] Alerta: patrón 'secret' encontrado en el archivo 'add.txt'.
+[2025-11-28 15:30:39] Alerta: patrón 'Distancia' encontrado en el archivo 'add.txt'.
+[2025-11-28 15:30:39] Alerta: patrón 'regex:.*palabra.*' encontrado en el archivo 'add.txt'.
+
+
+[2025-11-28 15:45:38] Alerta: patrón 'password' encontrado en el archivo 'add.txt'.
+[2025-11-28 15:45:38] Alerta: patrón 'API_KEY' encontrado en el archivo 'add.txt'.
+[2025-11-28 15:45:38] Alerta: patrón 'secret' encontrado en el archivo 'add.txt'.
+[2025-11-28 15:45:38] Alerta: patrón 'Distancia' encontrado en el archivo 'add.txt'.
+[2025-11-28 15:45:38] Alerta: patrón 'regex:.*palabra.*' encontrado en el archivo 'add.txt'.

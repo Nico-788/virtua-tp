@@ -1,202 +1,269 @@
-#!/usr/bin/env pwsh
+<#
+.SYNOPSIS
+Demonio para monitorear credenciales en directorios usando Event Subscribers
+
+.DESCRIPTION
+Script demonio para monitorear un directorio y detectar credenciales o datos sensibles
+utilizando FileSystemWatcher y Event Subscribers de PowerShell.
+
+.PARAMETER Repo
+Ruta del directorio a monitorear (OBLIGATORIO)
+
+.PARAMETER Configuracion
+Ruta del archivo de configuración con patrones a buscar (OBLIGATORIO)
+
+.PARAMETER Log
+Ruta del archivo de logs (OBLIGATORIO)
+
+.PARAMETER Alerta
+Intervalo en segundos para revisar cambios (opcional, default 10s)
+
+.PARAMETER Kill
+Flag para detener el demonio
+
+.EXAMPLE
+./audit.ps1 -Repo "/home/user/MyRepo" -Configuracion "./patrones.conf" -Log "./audit.log"
+
+.EXAMPLE
+./audit.ps1 -Repo "/home/user/MyRepo" -Kill
+#>
+
+[CmdletBinding()]
 param(
-    [Parameter(Mandatory=$false)][string]$repo,
-    [Parameter(Mandatory=$false)][string]$configuracion,
-    [Parameter(Mandatory=$false)][string]$log,
-    [switch]$kill,
-    [switch]$help
+    [Parameter(Mandatory=$false)]
+    [string]$Repo,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$Configuracion,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$Log,
+    
+    [Parameter(Mandatory=$false)]
+    [ValidateRange(1, [int]::MaxValue)]
+    [int]$Alerta = 10,
+    
+    [Parameter(Mandatory=$false)]
+    [switch]$Kill
 )
 
-function Show-Help {
-    Write-Host "NAME"
-    Write-Host "`t04-demon-git.ps1"
-    Write-Host ""
-    Write-Host "SYNOPSIS"
-    Write-Host "`t./04-demon-git.ps1 -repo <DIRECTORIO> [-configuracion <FILE>] [-log <FILE>] [-kill]"
-    Write-Host ""
-    Write-Host "DESCRIPTION"
-    Write-Host "`tMonitorea la rama de un repositorio Git para detectar credenciales o datos sensibles."
-    Write-Host "`tEl archivo de configuración contiene palabras clave o regex a buscar."
-    Write-Host ""
-    Write-Host "OPTIONS"
-    Write-Host "`t-repo / -r   Ruta del repositorio git"
-    Write-Host "`t-configuracion / -c   Archivo con palabras o regex (regex:patron)"
-    Write-Host "`t-log / -l    Archivo .log donde guardar coincidencias"
-    Write-Host "`t-kill / -k   Mata el proceso que monitorea el repo"
-    Write-Host "`t-help / -h   Muestra esta ayuda"
+# Función para convertir a ruta absoluta
+function Get-AbsolutePath {
+    param([string]$Path)
+    
+    if ([string]::IsNullOrEmpty($Path)) { return $Path }
+    
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return $Path
+    }
+    
+    try {
+        $resolved = Resolve-Path $Path -ErrorAction Stop
+        return $resolved.Path
+    } catch {
+        return [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path $Path))
+    }
 }
 
-if ($help) {
-    Show-Help
-    exit 0
-}
-
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$pidFile   = Join-Path $scriptDir ".tmp/demon_pid.conf"
-
-if (-not $repo) {
-    Write-Error "Error: especifique -repo"
-    exit 1
-}
-
-if (-not (Test-Path $repo)) {
-    Write-Error "Error: $repo no existe"
-    exit 1
-}
-
-# Validar si es repositorio Git
-try {
-    git -C $repo rev-parse --is-inside-work-tree *>$null
-} catch {
-    Write-Error "Error: no es un repositorio válido"
-    exit 1
-}
-$repoAbs = (Resolve-Path $repo).Path
-
-# ---- KILL ----
-if ($kill) {
-    if (Test-Path $pidFile -PathType Leaf) {
-        $found = $false
-        $lines = Get-Content $pidFile
-        Write-Host "$lines"
-        foreach ($line in $lines) {
-            $pidDaemon,$r = $line -split "\|"
-            Write-Host "$pidDaemon"
-            if ($r -eq $repoAbs) {
-                try {
-                    Stop-Process -Id $pidDaemon -ErrorAction SilentlyContinue
-                    $found = $true
-                } catch {}
-                # eliminar registro de ese demonio en el archivo
-                $updatedLines = $lines | Where-Object {$_ -notlike "$pidDaemon|*"}
-                
-                # 🔹 Manejar archivo vacío correctamente
-                if ($updatedLines) {
-                    $updatedLines | Set-Content $pidFile
-                } else {
-                    # Si no quedan líneas, crear archivo vacío
-                    "" | Set-Content $pidFile
-                }
-
-                # borrar el script temporal asociado
-                $tmpDir     = Join-Path $scriptDir ".tmp"
-                $daemonFile = Join-Path $tmpDir "daemon_instance.ps1"
-                if (Test-Path $daemonFile) {
-                    Remove-Item $daemonFile -Force
-                    Write-Host "Script temporal eliminado: $daemonFile"
-                }
-                break
-            }
+function Test-ParametrosObligatorios {
+    if ($Kill) {
+        if (-not $Repo) { Write-Error "ERROR: -Kill requiere -Repo"; exit 1 }
+        return
+    }
+    
+    if (-not $Repo) { Write-Error "ERROR: -Repo obligatorio"; Get-Help $PSCommandPath; exit 1 }
+    if (-not $Configuracion) { Write-Error "ERROR: -Configuracion obligatorio"; Get-Help $PSCommandPath; exit 1 }
+    if (-not $Log) { Write-Error "ERROR: -Log obligatorio"; Get-Help $PSCommandPath; exit 1 }
+    
+    $repoAbs = Get-AbsolutePath $Repo
+    if (-not (Test-Path $repoAbs -PathType Container)) {
+        Write-Error "ERROR: El directorio '$repoAbs' no existe"
+        exit 1
+    }
+    
+    $configAbs = Get-AbsolutePath $Configuracion
+    if (-not (Test-Path $configAbs -PathType Leaf)) {
+        Write-Error "ERROR: El archivo de configuración '$configAbs' no existe"
+        exit 1
+    }
+    
+    try {
+        $logAbs = Get-AbsolutePath $Log
+        $logDir = Split-Path $logAbs -Parent
+        if ($logDir -and -not (Test-Path $logDir)) {
+            New-Item -Path $logDir -ItemType Directory -Force | Out-Null
         }
-        if (-not $found) {
-            Write-Error "Error: repositorio no monitoreado"
-            exit 1
+        if (-not (Test-Path $logAbs)) {
+            New-Item -Path $logAbs -ItemType File -Force | Out-Null
         }
-
-        Start-Sleep -Seconds 5
-        if (Get-Process -Id $pidDaemon -ErrorAction SilentlyContinue) {
-            Write-Error "Error: el proceso no pudo matarse"
-            exit 1
-        }
-
-        # 🔹 Si ya no quedan demonios, borrar la carpeta .tmp
-        if (-not (Get-Content $pidFile)) {
-            Remove-Item (Split-Path $pidFile -Parent) -Recurse -Force
-            Write-Host "Carpeta temporal eliminada: $(Split-Path $pidFile -Parent)"
-        }
-
-        exit 0
-    } else {
-        Write-Error "Error: proceso no existe"
+        Add-Content -Path $logAbs -Value "" -ErrorAction Stop
+    } catch {
+        Write-Error "ERROR: No se puede escribir en log '$logAbs': $_"
         exit 1
     }
 }
 
-# Evitar duplicados
-if (Test-Path $pidFile) {
-    foreach ($line in Get-Content $pidFile) {
-        $pidDaemon,$r = $line -split "\|"
-        if (Get-Process -Id $pidDaemon -ErrorAction SilentlyContinue) {
-            if ($r -eq $repoAbs) {
-                Write-Error "Error: ya existe un demonio monitoreando $repoAbs con PID $pidDaemon"
-                exit 1
-            }
+function Get-RepoIdentifier {
+    param([string]$RepoPath)
+    $absolutePath = Get-AbsolutePath $RepoPath
+    $hash = [System.Security.Cryptography.SHA256]::Create()
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($absolutePath.ToLower())
+    $hashBytes = $hash.ComputeHash($bytes)
+    return [System.BitConverter]::ToString($hashBytes).Replace("-", "").Substring(0, 16)
+}
+
+function Get-LockFilePath {
+    param([string]$RepoPath)
+    $repoId = Get-RepoIdentifier -RepoPath $RepoPath
+    $tempDir = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { "/tmp" }
+    return Join-Path $tempDir "audit_daemon_$repoId.lock"
+}
+
+function Start-Demonio {
+    $repoAbs = Get-AbsolutePath $Repo
+    $configAbs = Get-AbsolutePath $Configuracion
+    $logAbs = Get-AbsolutePath $Log
+    $lockFile = Get-LockFilePath -RepoPath $Repo
+    
+    # Verificar si ya existe un demonio
+    if (Test-Path $lockFile) {
+        try {
+            $lockData = Get-Content $lockFile | ConvertFrom-Json
+            $null = Get-EventSubscriber -SourceIdentifier $lockData.SubscriberID -ErrorAction Stop
+            Write-Error "ERROR: Demonio ya corriendo (Subscriber: $($lockData.SubscriberID))"
+            exit 1
+        } catch {
+            Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
         }
     }
-}
-
-# Configuración
-if (-not $configuracion -or -not (Test-Path $configuracion)) {
-    Write-Error "Error: especifique archivo de configuración válido"
-    exit 1
-}
-$palabrasBuscar = @()
-$patronesRegex  = @()
-foreach ($line in Get-Content $configuracion) {
-    if ($line -match "^regex:(.*)") {
-        $patronesRegex += $matches[1]
-    } elseif ($line.Trim() -ne "") {
-        $palabrasBuscar += $line.Trim()
-    }
-}
-
-# Log
-if (-not $log -or $log -notmatch "\.log$") {
-    Write-Error "Error: especifique archivo .log válido"
-    exit 1
-}
-$logAbs = (Resolve-Path $log).Path
-#$configAbs = (Resolve-Path $configuracion).Path
-
-# Script que corre como demonio real
-$daemonScript = @"
-#!/usr/bin/env pwsh
-param(
-    [string]`$repoAbs,
-    [string]`$logAbs,
-    [string[]]`$palabrasBuscar,
-    [string[]]`$patronesRegex,
-    [string]`$pidFile,
-    [string]`$scriptDir
-)
-
-Set-Location `$repoAbs
-`$lastCommit = (git rev-parse main)
-
-while (`$true) {
-    `$currentCommit = (git rev-parse main)
-    if (`$currentCommit -ne `$lastCommit) {
-        `$archivosCommit = git diff --name-only `$lastCommit `$currentCommit
-        foreach (`$file in `$archivosCommit) {
-            if (-not (Test-Path `$file)) { continue }
-            `$pathAbs = (Resolve-Path `$file).Path
-            foreach (`$pal in `$palabrasBuscar) {
-                if (Select-String -Path `$file -Pattern `$pal -SimpleMatch -Quiet) {
-                    Add-Content `$logAbs ("[{0}] Alerta: palabra '{1}' en {2}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"),`$pal,`$pathAbs)
-                }
-            }
-            foreach (`$pat in `$patronesRegex) {
-                if (Select-String -Path `$file -Pattern `$pat -Quiet) {
-                    Add-Content `$logAbs ("[{0}] Alerta: patrón '{1}' en {2}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"),`$pat,`$pathAbs)
-                }
-            }
+    
+    # Leer patrones
+    $patrones = @()
+    Get-Content $configAbs | ForEach-Object {
+        $line = $_.Trim()
+        if ($line -and !$line.StartsWith("#")) {
+            $patrones += $line
         }
-        `$lastCommit = `$currentCommit
     }
-    Start-Sleep -Seconds 5
+    
+    if ($patrones.Count -eq 0) {
+        Write-Error "ERROR: No hay patrones válidos en configuración"
+        exit 1
+    }
+    
+    # Crear FileSystemWatcher
+    $watcher = New-Object System.IO.FileSystemWatcher
+    $watcher.Path = $repoAbs
+    $watcher.IncludeSubdirectories = $true
+    $watcher.NotifyFilter = [System.IO.NotifyFilters]::LastWrite -bor 
+                           [System.IO.NotifyFilters]::FileName -bor
+                           [System.IO.NotifyFilters]::CreationTime
+    
+    # Script para analizar archivos
+    $action = {
+        param($source, $eventArguments)
+        
+        $archivoPath = $eventArguments.FullPath
+        $nombreArchivo = Split-Path $archivoPath -Leaf
+        
+        # Obtener configuración del evento
+        $logPath = $event.MessageData.LogPath
+        $patrones = $event.MessageData.Patrones
+        
+        # Esperar a que el archivo esté disponible
+        Start-Sleep -Milliseconds 100
+        
+        if (-not (Test-Path $archivoPath -PathType Leaf)) { return }
+        
+        try {
+            $contenido = Get-Content $archivoPath -Raw -ErrorAction Stop
+            if (-not $contenido) { return }
+            
+            foreach ($patron in $patrones) {
+                $encontrado = $false
+                
+                if ($patron.StartsWith("regex:")) {
+                    $patronRegex = $patron.Substring(6)
+                    try {
+                        if ($contenido -match $patronRegex) { $encontrado = $true }
+                    } catch { }
+                } else {
+                    $patronEscapado = [regex]::Escape($patron)
+                    if ($contenido -match "(?i)$patronEscapado") { $encontrado = $true }
+                }
+                
+                if ($encontrado) {
+                    $fecha = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                    $mensaje = "[$fecha] Alerta: patrón '$patron' encontrado en el archivo '$nombreArchivo'."
+                    Add-Content -Path $logPath -Value $mensaje -ErrorAction SilentlyContinue
+                }
+            }
+        } catch { }
+    }
+    
+    # Datos para pasar al script
+    $messageData = @{
+        LogPath = $logAbs
+        Patrones = $patrones
+    }
+    
+    # Registrar eventos
+    $subscriberID = "AuditDaemon_$(Get-RepoIdentifier -RepoPath $Repo)"
+    
+    Register-ObjectEvent -InputObject $watcher -EventName "Changed" `
+                        -SourceIdentifier $subscriberID `
+                        -Action $action `
+                        -MessageData $messageData | Out-Null
+    
+    Register-ObjectEvent -InputObject $watcher -EventName "Created" `
+                        -SourceIdentifier "${subscriberID}_Created" `
+                        -Action $action `
+                        -MessageData $messageData | Out-Null
+    
+    # Iniciar el watcher
+    $watcher.EnableRaisingEvents = $true
+    
+    # Guardar información del lock
+    @{
+        SubscriberID = $subscriberID
+        Repo = $repoAbs
+        Started = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+    } | ConvertTo-Json | Set-Content $lockFile
+    
+    Write-Host "INFO: Demonio iniciado (Subscriber: $subscriberID)"
+    Write-Host "INFO: Monitoreando directorio: $repoAbs"
+    Write-Host "INFO: Para detener: pwsh $PSCommandPath -Repo `"$Repo`" -Kill"
 }
-"@
 
-# Guardar script temporal que será lanzado con Start-Process
-$tmpDir = Join-Path $scriptDir ".tmp"
-New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
-$daemonFile = Join-Path $tmpDir "daemon_instance.ps1"
-$daemonScript | Set-Content $daemonFile
+function Stop-Demonio {
+    $lockFile = Get-LockFilePath -RepoPath $Repo
+    
+    if (-not (Test-Path $lockFile)) {
+        Write-Error "ERROR: No hay demonio corriendo para este directorio"
+        exit 1
+    }
+    
+    try {
+        $lockData = Get-Content $lockFile | ConvertFrom-Json
+        
+        # Detener event subscribers
+        Get-EventSubscriber | Where-Object { $_.SourceIdentifier -like "$($lockData.SubscriberID)*" } | ForEach-Object {
+            Unregister-Event -SourceIdentifier $_.SourceIdentifier -ErrorAction SilentlyContinue
+        }
+        
+        Write-Host "INFO: Demonio detenido (Subscriber: $($lockData.SubscriberID))"
+    } catch {
+        Write-Host "INFO: Event subscriber ya no estaba registrado"
+    }
+    
+    Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
+}
 
-# Iniciar como proceso real
-$p = Start-Process pwsh -ArgumentList "-File `"$daemonFile`" -repoAbs `"$repoAbs`" -logAbs `"$logAbs`" -palabrasBuscar $($palabrasBuscar -join ',') -patronesRegex $($patronesRegex -join ',') -pidFile `"$pidFile`" -scriptDir `"$scriptDir`"" -PassThru
+# MAIN
+Test-ParametrosObligatorios
 
-$pidDaemon = $p.Id
-Add-Content $pidFile ("{0}|{1}" -f $pidDaemon,$repoAbs)
-
-Write-Output "Demonio iniciado con PID $pidDaemon para $repoAbs"
+if ($Kill) {
+    Stop-Demonio
+} else {
+    Start-Demonio
+}
