@@ -98,7 +98,7 @@ function limpiar_cache() {
         now=$(date +%s)
         while IFS= read -r linea; do
             timestamp="$(echo "$linea" | awk -F'|' '{print $6}')"
-            if [[ "$timestamp" =~ ^[0-9]+$ ]] && (( now - timestamp <= 0 )); then
+            if [[ "$timestamp" =~ ^[0-9]+$ ]] && (( now <= timestamp )); then
                 echo "$linea" >> "$tmpfile"
             fi
         done < "$CACHE_FILE"
@@ -113,49 +113,25 @@ limpiar_cache
 # Buscar en cache primero (TTL opcional)
 if [ -f "$CACHE_FILE" ]; then
     tmpPaises=("${paisesABuscar[@]}")
-    # Crear archivo temporal para las actualizaciones
-    tmp_cache=$(mktemp)
     
     while IFS= read -r linea; do
         info="${linea%|*}"
-        linea_modificada=false
         
         for i in "${!tmpPaises[@]}"; do
             currentPais="${tmpPaises[i]}"
             if echo "$info" | grep -qi "$currentPais"; then
-                ttl_arch="$(echo "$info" | awk -F'|' '{print $6}')"
-                result_ttl=$(( $(date +%s) - ttl_arch ))
+                ttl_arch="$(echo "$linea" | awk -F'|' '{print $6}')"
+                result_ttl=$(( ttl_arch - $(date +%s) ))
                 
-                if [ "$result_ttl" -lt 0 ]; then
+                if [ "$result_ttl" -gt 0 ]; then
                     echo -e "\nBuscando en CACHE: $currentPais\n"
                     echo "$info" | awk -F'|' '{printf "%s\n%s\n%s\n%s\n%s\n", $1, $2, $3, $4, $5}'
                     unset 'paisesABuscar[i]'
-                    
-                    # Actualizar TTL si el parámetro es mayor a 0
-                    if [ "$TTL_CACHE" -gt 0 ]; then
-                        nuevo_ttl=$(( $(date +%s) + TTL_CACHE ))
-                        # Reemplazar el TTL antiguo con el nuevo
-                        nueva_linea=$(echo "$info" | awk -F'|' -v new_ttl="$nuevo_ttl" '{printf "%s|%s|%s|%s|%s|%d|\n", $1, $2, $3, $4, $5, new_ttl}')
-                        echo "$nueva_linea" >> "$tmp_cache"
-                        linea_modificada=true
-                    fi
                 fi
             fi
         done
         
-        # Si no se modificó la línea, copiarla tal cual
-        if [ "$linea_modificada" = false ]; then
-            echo "$linea" >> "$tmp_cache"
-        fi
-        
     done < "$CACHE_FILE"
-    
-    # Reemplazar el archivo original con el actualizado
-    if [ "$TTL_CACHE" -gt 0 ]; then
-        mv "$tmp_cache" "$CACHE_FILE"
-    else
-        rm -f "$tmp_cache"
-    fi
 fi
 
 # Buscar en API los paises restantes
